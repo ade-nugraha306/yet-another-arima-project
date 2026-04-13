@@ -1,0 +1,95 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@import url('https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600&family=Inter:wght@300;400;500;600;700;800&display=swap');
+
+@layer base {
+  :root {
+    --background: 220 25% 10%;
+    --foreground: 210 20% 92%;
+
+    --card: 220 22% 13%;
+    --card-foreground: 210 20% 92%;
+
+    --popover: 220 22% 13%;
+    --popover-foreground: 210 20% 92%;
+
+    --primary: 174 72% 50%;
+    --primary-foreground: 220 25% 10%;
+
+    --secondary: 220 20% 18%;
+    --secondary-foreground: 210 20% 85%;
+
+    --muted: 220 18% 16%;
+    --muted-foreground: 215 15% 55%;
+
+    --accent: 262 60% 58%;
+    --accent-foreground: 210 20% 95%;
+
+    --destructive: 0 72% 55%;
+    --destructive-foreground: 210 40% 98%;
+
+    --border: 220 18% 20%;
+    --input: 220 18% 20%;
+    --ring: 174 72% 50%;
+
+    --radius: 0.75rem;
+
+    --chart-1: 174 72% 50%;
+    --chart-2: 262 60% 58%;
+    --chart-3: 35 92% 60%;
+    --chart-4: 142 60% 50%;
+    --chart-5: 350 70% 58%;
+
+    --sidebar-background: 220 25% 8%;
+    --sidebar-foreground: 210 20% 85%;
+    --sidebar-primary: 174 72% 50%;
+    --sidebar-primary-foreground: 220 25% 10%;
+    --sidebar-accent: 220 20% 14%;
+    --sidebar-accent-foreground: 210 20% 92%;
+    --sidebar-border: 220 18% 16%;
+    --sidebar-ring: 174 72% 50%;
+
+    --success: 142 60% 50%;
+    --warning: 35 92% 60%;
+    --info: 200 80% 55%;
+  }
+}
+
+@layer base {
+  * {
+    @apply border-border;
+  }
+
+  body {
+    @apply bg-background text-foreground font-sans;
+    font-family: 'Inter', sans-serif;
+  }
+
+  code, .font-mono {
+    font-family: 'JetBrains Mono', monospace;
+  }
+}
+
+@layer components {
+  .stat-card {
+    @apply bg-card border border-border rounded-lg p-4 transition-all duration-200;
+  }
+  .stat-card:hover {
+    border-color: hsl(var(--primary) / 0.4);
+    box-shadow: 0 0 20px hsl(var(--primary) / 0.08);
+  }
+  .section-header {
+    @apply text-2xl font-bold tracking-tight;
+  }
+  .section-badge {
+    @apply inline-flex items-center gap-2 px-3 py-1 rounded-full text-xs font-semibold uppercase tracking-wider;
+    background: hsl(var(--primary) / 0.12);
+    color: hsl(var(--primary));
+  }
+  .glow-border {
+    border-color: hsl(var(--primary) / 0.3);
+    box-shadow: 0 0 30px hsl(var(--primary) / 0.06);
+  }
+}

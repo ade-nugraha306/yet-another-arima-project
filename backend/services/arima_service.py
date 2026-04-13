@@ -1,0 +1,408 @@
+"""
+arima_service.py
+Bridge antara pipeline arima_ta.py dan endpoint FastAPI.
+"""
+
+import os
+import warnings
+import numpy as np
+import pandas as pd
+from pathlib import Path
+from functools import lru_cache
+
+from statsmodels.tsa.arima.model import ARIMA
+from statsmodels.tsa.api import ExponentialSmoothing
+from sklearn.metrics import mean_absolute_error, mean_squared_error
+from pmdarima import auto_arima
+
+warnings.filterwarnings("ignore")
+
+# ---------------------------------------------------------------
+# PATH ke file Excel  (sesuaikan jika perlu)
+# ---------------------------------------------------------------
+BASE_DIR = Path(__file__).resolve().parent.parent
+DATA_PATH = BASE_DIR / "AVG 12W & 5W (W1-W40).xlsx"
+
+
+# ---------------------------------------------------------------
+# LOAD + CACHE dataframe (agar tidak re-load tiap request)
+# ---------------------------------------------------------------
+_df_long_cache: pd.DataFrame | None = None
+
+
+def _is_week_col(c) -> bool:
+    """Cek apakah nama kolom adalah nomor minggu (1–52)."""
+    try:
+        val = float(str(c).strip())
+        return val == int(val) and 1 <= int(val) <= 52
+    except Exception:
+        return False
+
+
+def _load_df_long() -> pd.DataFrame:
+    global _df_long_cache
+    if _df_long_cache is not None:
+        return _df_long_cache
+
+    # ── Baca raw dulu untuk cari baris header ───────────────────
+    df_raw = pd.read_excel(DATA_PATH, header=None)
+    header_row = df_raw[
+        df_raw.astype(str).apply(
+            lambda x: x.str.contains("Kode Produk", case=False)
+        ).any(axis=1)
+    ].index[0]
+
+    # ── Baca ulang dengan header yang benar ─────────────────────
+    df = pd.read_excel(DATA_PATH, header=header_row)
+    df = df.loc[:, ~df.columns.duplicated()]
+
+    # ── Deteksi week cols secara robust ─────────────────────────
+    # XLSX punya kolom: 1 (int), 2.0, 3.0, ... (float) → keduanya valid
+    # Kolom non-minggu: "Total Result", "AVG 12W", "Adjustment", NaN → diabaikan
+    week_cols = [c for c in df.columns if _is_week_col(c)]
+
+    if len(week_cols) == 0:
+        raise ValueError(
+            f"Tidak ada kolom minggu yang terdeteksi. "
+            f"Periksa format file: {DATA_PATH}"
+        )
+
+    # ── Pastikan kolom id ada ────────────────────────────────────
+    id_cols = ["PRINC 1", "Kode Produk", "Produk"]
+    missing_id = [c for c in id_cols if c not in df.columns]
+    if missing_id:
+        raise ValueError(f"Kolom berikut tidak ditemukan: {missing_id}")
+
+    # ── Buang baris tanpa nama produk ────────────────────────────
+    df = df[df["Produk"].notna()].copy()
+
+    # ── Melt ke format long ──────────────────────────────────────
+    df_long = df.melt(
+        id_vars=id_cols,
+        value_vars=week_cols,
+        var_name="Week",
+        value_name="Sales",
+    )
+
+    # Konversi Week ke int (dari int/float) dan Sales ke numeric
+    df_long["Week"]  = df_long["Week"].apply(lambda x: int(float(x)))
+    df_long["Sales"] = pd.to_numeric(df_long["Sales"], errors="coerce")
+
+    # ── Buat kolom Date dari nomor minggu ────────────────────────
+    start_date = pd.Timestamp("2025-01-01")
+    df_long["Date"] = df_long["Week"].apply(
+        lambda w: start_date + pd.to_timedelta((w - 1) * 7, unit="D")
+    )
+
+    df_long = df_long.sort_values(["Produk", "Date"]).reset_index(drop=True)
+    _df_long_cache = df_long
+    return _df_long_cache
+
+
+# ---------------------------------------------------------------
+# FUNGSI UTILITAS (diambil dari arima_ta.py)
+# ---------------------------------------------------------------
+
+def _clean_all_numeric(df: pd.DataFrame) -> pd.DataFrame:
+    # Hanya bersihkan kolom Sales saja — clipping semua kolom numerik
+    # (termasuk Week 1-40) bisa merusak nilai Sales secara tidak langsung
+    if "Sales" not in df.columns:
+        return df
+
+    df["Sales"] = df["Sales"].interpolate(method="linear")
+
+    # IQR clipping hanya jika ada variasi cukup (hindari data konstan)
+    Q1, Q3 = df["Sales"].quantile([0.25, 0.75])
+    IQR = Q3 - Q1
+    if IQR > 0:
+        df["Sales"] = df["Sales"].clip(Q1 - 1.5 * IQR, Q3 + 1.5 * IQR)
+
+    return df
+
+
+def _check_stationarity(series: pd.Series):
+    from statsmodels.tsa.stattools import adfuller
+    series = series.dropna()
+    if series.nunique() <= 1:
+        return True, 0.0
+    try:
+        res = adfuller(series, autolag="AIC")
+        return res[1] <= 0.05, res[1]
+    except Exception:
+        return False, 1.0
+
+
+def _make_stationary(df: pd.DataFrame):
+    s = df["Sales"]
+    is_stat, _ = _check_stationarity(s)
+    if is_stat:
+        return df, "Sales", 0
+    df["Sales_Diff"] = s.diff()
+    if _check_stationarity(df["Sales_Diff"].dropna())[0]:
+        return df, "Sales_Diff", 1
+    df["Sales_Diff2"] = df["Sales_Diff"].diff()
+    return df, "Sales_Diff2", 2
+
+
+def _stable_forecast(series: pd.Series, order=None, steps: int = 5) -> pd.Series:
+    series = pd.Series(series).dropna()
+    if len(series) < 3:
+        return pd.Series([float(series.iloc[-1])] * steps)
+
+    # 1) ARIMA
+    if order is not None:
+        try:
+            model = ARIMA(series, order=order).fit()
+            fc = model.forecast(steps=steps)
+            return pd.Series(fc.values)
+        except Exception:
+            pass
+
+    # 2) ETS fallback
+    try:
+        ets = ExponentialSmoothing(series, trend="add", seasonal=None, damped=True).fit()
+        return pd.Series(ets.forecast(steps).values)
+    except Exception:
+        pass
+
+    # 3) Naive fallback
+    return pd.Series([float(series.iloc[-1])] * steps)
+
+
+def _get_confidence_intervals(series: pd.Series, order, steps: int):
+    """Kembalikan upper & lower CI 95%; fallback ke ±std naive."""
+    series = pd.Series(series).dropna()
+    try:
+        model = ARIMA(series, order=order).fit()
+        forecast_result = model.get_forecast(steps=steps)
+        ci = forecast_result.conf_int(alpha=0.05)
+        upper = ci.iloc[:, 1].values.tolist()
+        lower = ci.iloc[:, 0].values.tolist()
+        return upper, lower
+    except Exception:
+        fc = _stable_forecast(series, order=order, steps=steps).values
+        std = float(series.std()) if len(series) > 1 else 0.0
+        upper = (fc + 1.96 * std).tolist()
+        lower = (fc - 1.96 * std).tolist()
+        return upper, lower
+
+
+def _prepare_product(product_name: str):
+    """Load, clean & stationarize data untuk 1 produk."""
+    df_long = _load_df_long()
+    df_p = df_long[df_long["Produk"] == product_name].copy()
+    if df_p.empty:
+        raise ValueError(f"Produk '{product_name}' tidak ditemukan.")
+    df_p = df_p.set_index("Date").sort_index()
+    df_p = _clean_all_numeric(df_p)
+    df_p, col_used, d = _make_stationary(df_p)
+    return df_p, col_used, d
+
+
+# ---------------------------------------------------------------
+# PUBLIC API  (dipanggil oleh app.py)
+# ---------------------------------------------------------------
+
+def get_products() -> list[str]:
+    df_long = _load_df_long()
+    return sorted(df_long["Produk"].dropna().unique().tolist())
+
+
+def _invert_differencing(fc_diff: pd.Series, last_values: dict, d: int) -> pd.Series:
+    """
+    Kembalikan hasil forecast dari skala differencing ke skala Sales asli.
+    - d=0: tidak perlu invert
+    - d=1: cumsum dari last Sales
+    - d=2: cumsum dua kali (last Sales + last Sales_Diff)
+    """
+    if d == 0:
+        return fc_diff
+
+    fc = fc_diff.values.copy().astype(float)
+
+    if d >= 1:
+        last_sales = float(last_values["Sales"])
+        # Invert diff-1: nilai forecast = last_sales + cumsum(diff_forecast)
+        reverted = np.empty(len(fc))
+        prev = last_sales
+        for i, v in enumerate(fc):
+            prev = prev + v
+            reverted[i] = prev
+        fc = reverted
+
+    if d >= 2:
+        # Invert diff-2: butuh last Sales dan last Sales_Diff
+        last_diff = float(last_values.get("Sales_Diff", 0.0))
+        reverted2 = np.empty(len(fc))
+        prev_sales = last_sales
+        prev_diff  = last_diff
+        for i, v in enumerate(fc_diff.values):
+            prev_diff  = prev_diff + v          # invert diff-2 → diff-1
+            prev_sales = prev_sales + prev_diff  # invert diff-1 → Sales
+            reverted2[i] = prev_sales
+        fc = reverted2
+
+    return pd.Series(fc)
+
+
+def run_forecast(product: str, horizon: int = 5) -> dict:
+    """
+    Jalankan auto-ARIMA + forecast untuk 1 produk.
+    Forecast selalu dikembalikan dalam skala Sales asli (invert differencing).
+    Returns:
+      {
+        forecast: list[float],
+        upper: list[float],
+        lower: list[float],
+        order: [p, d, q],
+        aic: float,
+        weeks: list[str],
+        last_sales: float   # nilai Sales terakhir (referensi)
+      }
+    """
+    df_p, col_used, d = _prepare_product(product)
+    series = df_p[col_used].dropna()
+    sales_series = df_p["Sales"].dropna()
+
+    # Nilai terakhir untuk invert differencing
+    last_values = {"Sales": float(sales_series.iloc[-1])}
+    if "Sales_Diff" in df_p.columns:
+        last_values["Sales_Diff"] = float(df_p["Sales_Diff"].dropna().iloc[-1])
+
+    # Auto ARIMA — selalu fit pada Sales langsung (d di-handle pmdarima)
+    # agar order.d akurat dan invert tidak double-count
+    try:
+        am = auto_arima(
+            sales_series,           # <-- pakai Sales asli, bukan diff
+            start_p=0, start_q=0,
+            max_p=3, max_q=3,
+            max_d=2,
+            seasonal=False,
+            stepwise=True,
+            suppress_warnings=True,
+            error_action="ignore",
+            maxiter=30,
+        )
+        order = am.order
+        aic   = float(am.aic())
+    except Exception:
+        order = (1, d, 1)
+        aic   = None
+
+    # Forecast pada Sales asli — tidak perlu invert manual
+    fc_series = _stable_forecast(sales_series, order=order, steps=horizon)
+    upper, lower = _get_confidence_intervals(sales_series, order, horizon)
+
+    return {
+        "forecast":   [round(float(v), 4) for v in fc_series],
+        "upper":      [round(float(v), 4) for v in upper],
+        "lower":      [round(float(v), 4) for v in lower],
+        "order":      list(order),
+        "aic":        round(aic, 4) if aic is not None else None,
+        "weeks":      [f"F+{i+1}" for i in range(horizon)],
+        "last_sales": round(last_values["Sales"], 4),
+    }
+
+
+def run_evaluation(product: str) -> dict:
+    """
+    Train/test split evaluation untuk 1 produk.
+    Returns:
+      {
+        mae, rmse, mape,
+        actual_train: list[float],
+        actual_test:  list[float],
+        fitted:       list[float],
+        order: [p, d, q],
+        dates_train: list[str],
+        dates_test:  list[str],
+      }
+    """
+    df_p, col_used, d = _prepare_product(product)
+    sales_series = df_p["Sales"].dropna()
+
+    n = len(sales_series)
+    if n < 10:
+        raise ValueError(f"Data terlalu pendek untuk produk '{product}' (n={n}).")
+
+    # Auto ARIMA pada Sales asli
+    try:
+        am = auto_arima(
+            sales_series,
+            start_p=0, start_q=0,
+            max_p=3, max_q=3,
+            max_d=2,
+            seasonal=False,
+            stepwise=True,
+            suppress_warnings=True,
+            error_action="ignore",
+            maxiter=30,
+        )
+        order = am.order
+        aic = float(am.aic())
+    except Exception:
+        order = (1, d, 1)
+        aic = None
+
+    # Train/test split (75/25) — semua pakai Sales asli
+    train_size  = int(0.75 * n)
+    train_sales = sales_series[:train_size]
+    test_sales  = sales_series[train_size:]
+
+    fc = _stable_forecast(train_sales, order=order, steps=len(test_sales))
+
+    mae  = float(mean_absolute_error(test_sales, fc))
+    rmse = float(np.sqrt(mean_squared_error(test_sales, fc)))
+    mape = float(np.mean(np.abs((test_sales.values - fc.values) / (test_sales.values + 1e-10))) * 100)
+
+    def _to_dates(idx):
+        try:
+            return [str(i.date()) for i in idx]
+        except Exception:
+            return [str(i) for i in idx]
+
+    return {
+        "order":        list(order),
+        "aic":          round(aic, 4) if aic is not None else None,
+        "mae":          round(mae, 4),
+        "rmse":         round(rmse, 4),
+        "mape":         round(mape, 4),
+        "actual_train": [round(float(v), 4) for v in train_sales],
+        "actual_test":  [round(float(v), 4) for v in test_sales],
+        "fitted":       [round(float(v), 4) for v in fc],
+        "dates_train":  _to_dates(train_sales.index),
+        "dates_test":   _to_dates(test_sales.index),
+    }
+
+
+def run_eda(product: str) -> dict:
+    """
+    Basic EDA stats + rolling mean untuk 1 produk.
+    Returns dict berisi statistik & data untuk plot.
+    """
+    df_p, col_used, d = _prepare_product(product)
+    s = df_p["Sales"].dropna()
+
+    rolling_mean = s.rolling(window=4, min_periods=1).mean()
+    rolling_std  = s.rolling(window=4, min_periods=1).std().fillna(0)
+
+    def _to_dates(idx):
+        try:
+            return [str(i.date()) for i in idx]
+        except Exception:
+            return [str(i) for i in idx]
+
+    return {
+        "product":       product,
+        "count":         int(len(s)),
+        "mean":          round(float(s.mean()), 4),
+        "std":           round(float(s.std()), 4),
+        "min":           round(float(s.min()), 4),
+        "max":           round(float(s.max()), 4),
+        "stationary":    bool(_check_stationarity(s)[0]),
+        "d":             d,
+        "dates":         _to_dates(s.index),
+        "sales":         [round(float(v), 4) for v in s],
+        "rolling_mean":  [round(float(v), 4) for v in rolling_mean],
+        "rolling_std":   [round(float(v), 4) for v in rolling_std],
+    }
