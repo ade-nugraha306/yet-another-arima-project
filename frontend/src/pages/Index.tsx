@@ -42,7 +42,7 @@ const Index = () => {
       case 0: return <BusinessUnderstanding />;
       case 1: return <DataAcquisition product={selectedProduct} />
       case 2: return <DataPreparation product={selectedProduct} />;
-      case 3: return <EDA productIndex={productIndex} />;
+      case 3: return <EDA product={selectedProduct} />;
       case 4:
         return (
           <Modeling
