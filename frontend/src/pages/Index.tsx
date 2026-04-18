@@ -46,7 +46,6 @@ const Index = () => {
       case 4:
         return (
           <Modeling
-            productIndex={productIndex}
             selectedProduct={selectedProduct}
             horizon={horizon}
           />
