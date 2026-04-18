@@ -41,7 +41,7 @@ const Index = () => {
     switch (activeStage) {
       case 0: return <BusinessUnderstanding />;
       case 1: return <DataAcquisition product={selectedProduct} />
-      case 2: return <DataPreparation />;
+      case 2: return <DataPreparation product={selectedProduct} />;
       case 3: return <EDA productIndex={productIndex} />;
       case 4:
         return (
