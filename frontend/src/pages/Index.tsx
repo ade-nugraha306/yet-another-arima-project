@@ -52,7 +52,7 @@ const Index = () => {
           />
         );
       case 5:
-        return <Evaluation productIndex={productIndex} horizon={horizon} />;
+        return <Evaluation product={selectedProduct} horizon={horizon} />;
       default:
         return <BusinessUnderstanding />;
     }

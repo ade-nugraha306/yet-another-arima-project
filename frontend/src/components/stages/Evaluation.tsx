@@ -1,47 +1,136 @@
-import { CheckCircle, TrendingUp, TrendingDown, Minus } from "lucide-react";
+import { useEffect, useState } from "react";
+import { CheckCircle, TrendingUp, TrendingDown, Minus, Loader2 } from "lucide-react";
 import {
   LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer,
   ReferenceLine,
 } from "recharts";
-import { generateWeeklyData, generateForecast, getModelMetrics } from "@/lib/mockData";
+import { evaluateProduct, type EvaluationResponse } from "@/services/api";
 
 interface Props {
-  productIndex: number;
+  product: string;
   horizon: number;
 }
 
-const Evaluation = ({ productIndex, horizon }: Props) => {
-  const data = generateWeeklyData(productIndex);
-  const metrics = getModelMetrics();
-  const forecast = generateForecast(data, horizon);
+const Evaluation = ({ product }: Props) => {
+  const [evaluation, setEvaluation] = useState<EvaluationResponse | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
 
-  const trainSize = Math.floor(data.length * 0.8);
-  const trainData = data.slice(0, trainSize);
-  const testData = data.slice(trainSize);
+  useEffect(() => {
+    let cancelled = false;
 
-  // Simulated test forecast
-  const testForecast = testData.map((d, i) => ({
-    ...d,
-    predicted: d.sales + Math.round((Math.sin(i) * 8)),
+    async function load() {
+      setLoading(true);
+      setError(null);
+
+      try {
+        const data = await evaluateProduct(product);
+        if (!cancelled) setEvaluation(data);
+      } catch (e: unknown) {
+        if (!cancelled) {
+          setError(e instanceof Error ? e.message : "Gagal memuat evaluasi model");
+        }
+      } finally {
+        if (!cancelled) setLoading(false);
+      }
+    }
+
+    load();
+    return () => { cancelled = true };
+  }, [product]);
+
+  if (loading) {
+    return (
+      <div className="flex items-center gap-2 text-muted-foreground text-sm py-8">
+        <Loader2 className="w-4 h-4 animate-spin" /> Mengevaluasi model…
+      </div>
+    );
+  }
+
+  if (error || !evaluation) {
+    return <p className="text-sm text-destructive py-4">{error ?? "Data evaluasi tidak tersedia"}</p>;
+  }
+
+  // ── BUILD DATA ─────────────────────────────────────
+
+  const trainLen = evaluation.actual_train.length;
+
+  const trainData = evaluation.actual_train.map((sales, i) => ({
+    week: evaluation.dates_train[i],
+    sales,
+    fitted: evaluation.fitted?.[i] ?? null,
+    predicted: null,
+    type: "train",
   }));
 
-  const splitData = [
-    ...trainData.map(d => ({ ...d, type: "train", predicted: null as number | null })),
-    ...testForecast.map(d => ({ ...d, type: "test" })),
-  ];
+  const testData = evaluation.actual_test.map((sales, i) => {
+    const predIndex = trainLen + i;
 
-  // Trend classification
-  const avgGrowth = ((data[data.length - 1].sales - data[0].sales) / data[0].sales) * 100;
-  const trendClass = avgGrowth > 20 ? "FAST" : avgGrowth > 5 ? "MEDIUM" : "SLOW";
-  const trendColor = trendClass === "FAST" ? "text-success" : trendClass === "MEDIUM" ? "text-warning" : "text-destructive";
-  const TrendIcon = trendClass === "FAST" ? TrendingUp : trendClass === "SLOW" ? TrendingDown : Minus;
+    return {
+      week: evaluation.dates_test[i],
+      sales,
+      fitted: null,
+      predicted: evaluation.fitted?.[predIndex] ?? null,
+      type: "test",
+    };
+  });
+
+  const splitData = [...trainData, ...testData];
+  const splitWeek = evaluation.dates_train[trainLen - 1];
+
+  // ── TREND CALCULATION (SAFE) ───────────────────────
+
+  const allActual = [...evaluation.actual_train, ...evaluation.actual_test];
+
+  const avgGrowth =
+    allActual.length > 1 && allActual[0] !== 0
+      ? ((allActual[allActual.length - 1] - allActual[0]) / allActual[0]) * 100
+      : 0;
+
+  const trendClass =
+    avgGrowth > 15 ? "FAST" :
+    avgGrowth > 3 ? "MEDIUM" :
+    "SLOW";
+
+  const trendColor =
+    trendClass === "FAST"
+      ? "text-success"
+      : trendClass === "MEDIUM"
+      ? "text-warning"
+      : "text-destructive";
+
+  const TrendIcon =
+    trendClass === "FAST"
+      ? TrendingUp
+      : trendClass === "SLOW"
+      ? TrendingDown
+      : Minus;
+
+  // ── METRICS ───────────────────────────────────────
 
   const metricCards = [
-    { label: "MSE", value: metrics.mse, desc: "Mean Squared Error" },
-    { label: "RMSE", value: metrics.rmse, desc: "Root Mean Squared Error" },
-    { label: "MAE", value: metrics.mae, desc: "Mean Absolute Error" },
-    { label: "MAPE", value: `${metrics.mape}%`, desc: "Mean Abs. Percentage Error" },
+    { label: "MAE", value: evaluation.mae.toFixed(2), desc: "Mean Absolute Error" },
+    { label: "RMSE", value: evaluation.rmse.toFixed(2), desc: "Root Mean Squared Error" },
+    { label: "MAPE", value: `${evaluation.mape.toFixed(2)}%`, desc: "Mean Abs. Percentage Error" },
   ];
+
+  // ── STYLES ────────────────────────────────────────
+
+  const tooltipStyle = {
+    contentStyle: {
+      background: "hsl(220 22% 13%)",
+      border: "1px solid hsl(220 18% 20%)",
+      borderRadius: 8,
+      color: "hsl(210 20% 92%)",
+    },
+  };
+
+  const tickStyle = {
+    fontSize: 10,
+    fill: "hsl(215 15% 55%)",
+  };
+
+  // ── UI ────────────────────────────────────────────
 
   return (
     <div className="space-y-6 animate-fade-in">
@@ -49,67 +138,109 @@ const Evaluation = ({ productIndex, horizon }: Props) => {
         <span className="section-badge">Tahap 6</span>
         <h2 className="section-header mt-3">Evaluation & Validation</h2>
         <p className="text-muted-foreground mt-1">
-          Mengevaluasi performa model dan mengklasifikasikan tren penjualan produk.
+          Mengevaluasi performa model berdasarkan data train dan test.
         </p>
       </div>
 
-      {/* Train-Test Split */}
+      {/* MODEL INFO */}
+      <div className="stat-card glow-border">
+        <p className="text-sm text-muted-foreground">
+          Model:
+          <span className="ml-2 font-mono font-bold text-primary">
+            ARIMA({evaluation.order[0]}, {evaluation.order[1]}, {evaluation.order[2]})
+          </span>
+        </p>
+      </div>
+
+      {/* CHART */}
       <div className="stat-card">
-        <h3 className="text-sm font-semibold text-primary mb-3">📊 Train-Test Split & Prediksi</h3>
-        <div className="flex gap-4 mb-3">
-          <span className="text-xs px-2 py-1 rounded bg-primary/15 text-primary">■ Train ({trainSize} minggu)</span>
-          <span className="text-xs px-2 py-1 rounded bg-warning/15 text-warning">■ Test ({data.length - trainSize} minggu)</span>
-          <span className="text-xs px-2 py-1 rounded bg-accent/15 text-accent-foreground">■ Predicted</span>
-        </div>
-        <ResponsiveContainer width="100%" height={250}>
+        <h3 className="text-sm font-semibold text-primary mb-3">
+          📊 Train-Test Split & Prediction
+        </h3>
+
+        <ResponsiveContainer width="100%" height={260}>
           <LineChart data={splitData}>
             <CartesianGrid strokeDasharray="3 3" stroke="hsl(220 18% 20%)" />
-            <XAxis dataKey="week" tick={{ fontSize: 10, fill: "hsl(215 15% 55%)" }} interval={4} />
-            <YAxis tick={{ fontSize: 10, fill: "hsl(215 15% 55%)" }} />
-            <Tooltip contentStyle={{ background: "hsl(220 22% 13%)", border: "1px solid hsl(220 18% 20%)", borderRadius: 8, color: "hsl(210 20% 92%)" }} />
-            <ReferenceLine x={`W${trainSize}`} stroke="hsl(35 92% 60%)" strokeDasharray="5 5" label={{ value: "Split", fill: "hsl(35 92% 60%)", fontSize: 10 }} />
-            <Line type="monotone" dataKey="sales" stroke="hsl(174 72% 50%)" strokeWidth={2} dot={false} name="Actual" />
-            <Line type="monotone" dataKey="predicted" stroke="hsl(262 60% 58%)" strokeWidth={2} strokeDasharray="4 2" dot={false} name="Predicted" />
+
+            <XAxis dataKey="week" tick={tickStyle} interval={4} />
+            <YAxis tick={tickStyle} />
+
+            <Tooltip
+              {...tooltipStyle}
+              formatter={(value: number, name: string) => [
+                value?.toFixed?.(2) ?? value,
+                name,
+              ]}
+            />
+
+            <ReferenceLine
+              x={splitWeek}
+              stroke="hsl(35 92% 60%)"
+              strokeDasharray="5 5"
+              label={{ value: "Split", fill: "hsl(35 92% 60%)", fontSize: 10 }}
+            />
+
+            <Line
+              dataKey="sales"
+              stroke="hsl(174 72% 50%)"
+              strokeWidth={2}
+              dot={false}
+              name="Actual"
+            />
+
+            <Line
+              dataKey="fitted"
+              stroke="hsl(262 60% 58%)"
+              strokeDasharray="4 2"
+              dot={false}
+              name="Fitted"
+              connectNulls
+            />
+
+            <Line
+              dataKey="predicted"
+              stroke="hsl(35 92% 60%)"
+              strokeDasharray="4 2"
+              dot={false}
+              name="Test Prediction"
+              connectNulls
+            />
           </LineChart>
         </ResponsiveContainer>
       </div>
 
-      {/* Metrics */}
-      <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
-        {metricCards.map(m => (
+      {/* METRICS */}
+      <div className="grid grid-cols-2 md:grid-cols-3 gap-4">
+        {metricCards.map((m) => (
           <div key={m.label} className="stat-card text-center">
             <div className="text-xs text-muted-foreground mb-1">{m.desc}</div>
             <div className="text-2xl font-bold font-mono text-primary">{m.value}</div>
-            <div className="text-sm font-semibold text-muted-foreground">{m.label}</div>
+            <div className="text-sm text-muted-foreground">{m.label}</div>
           </div>
         ))}
       </div>
 
-      {/* Trend Classification */}
+      {/* TREND */}
       <div className="stat-card glow-border">
         <h3 className="text-sm font-semibold text-primary mb-4 flex items-center gap-2">
-          <CheckCircle className="w-4 h-4" /> Klasifikasi Tren Penjualan
+          <CheckCircle className="w-4 h-4" /> Klasifikasi Tren
         </h3>
+
         <div className="flex items-center justify-center gap-6">
           <TrendIcon className={`w-12 h-12 ${trendColor}`} />
+
           <div>
-            <div className={`text-4xl font-extrabold ${trendColor}`}>{trendClass}</div>
+            <div className={`text-4xl font-extrabold ${trendColor}`}>
+              {trendClass}
+            </div>
+
             <div className="text-sm text-muted-foreground">
-              Pertumbuhan: <span className="font-mono font-semibold">{avgGrowth.toFixed(1)}%</span> selama 40 minggu
+              Growth:
+              <span className="ml-2 font-mono font-semibold">
+                {avgGrowth.toFixed(1)}%
+              </span>
             </div>
           </div>
-        </div>
-        <div className="mt-4 grid grid-cols-3 gap-2 text-center text-xs">
-          {[
-            { label: "SLOW", range: "< 5%", color: "bg-destructive/15 text-destructive" },
-            { label: "MEDIUM", range: "5% – 20%", color: "bg-warning/15 text-warning" },
-            { label: "FAST", range: "> 20%", color: "bg-success/15 text-success" },
-          ].map(t => (
-            <div key={t.label} className={`p-2 rounded ${t.color} ${trendClass === t.label ? "ring-1 ring-current" : "opacity-50"}`}>
-              <div className="font-bold">{t.label}</div>
-              <div>{t.range}</div>
-            </div>
-          ))}
         </div>
       </div>
     </div>
