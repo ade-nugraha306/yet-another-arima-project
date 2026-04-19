@@ -168,24 +168,64 @@ def _stable_forecast(series: pd.Series, order=None, steps: int = 5) -> pd.Series
     # 3) Naive fallback
     return pd.Series([float(series.iloc[-1])] * steps)
 
+def _get_confidence_intervals(
+    series: pd.Series,
+    order,
+    steps: int,
+    forecast_values=None,
+):
+    """CI 95% business-safe: selalu di-anchor ke forecast_values (WMA atau ARIMA).
 
-def _get_confidence_intervals(series: pd.Series, order, steps: int):
-    """Kembalikan upper & lower CI 95%; fallback ke ±std naive."""
+    Perubahan utama:
+    - Menerima forecast_values dari luar agar CI sinkron dengan forecast final
+      (termasuk saat model buruk dan forecast diganti WMA).
+    - Spread dihitung dari sigma historis — bukan persentase flat — sehingga
+      lower/upper ikut naik/turun mengikuti forecast, bukan flat atau turun.
+    - Spread membesar seiring horizon (sqrt scaling, seperti random-walk).
+    """
     series = pd.Series(series).dropna()
-    try:
-        model = ARIMA(series, order=order).fit()
-        forecast_result = model.get_forecast(steps=steps)
-        ci = forecast_result.conf_int(alpha=0.05)
-        upper = ci.iloc[:, 1].values.tolist()
-        lower = ci.iloc[:, 0].values.tolist()
-        return upper, lower
-    except Exception:
-        fc = _stable_forecast(series, order=order, steps=steps).values
-        std = float(series.std()) if len(series) > 1 else 0.0
-        upper = (fc + 1.96 * std).tolist()
-        lower = (fc - 1.96 * std).tolist()
-        return upper, lower
 
+    # ── Volatilitas historis sebagai base spread ─────────────────────────────
+    roll_std = series.rolling(4, min_periods=2).std().iloc[-1]
+    sigma = float(roll_std if not np.isnan(roll_std) else series.std())
+    sigma = max(sigma, 1e-6)
+
+    # ── Gunakan forecast_values kalau ada, fallback ke ARIMA ────────────────
+    if forecast_values is not None:
+        fc = np.asarray(forecast_values, dtype=float)
+    else:
+        try:
+            model = ARIMA(series, order=order).fit()
+            fc = model.get_forecast(steps=steps).predicted_mean.values
+        except Exception:
+            fc = _stable_forecast(series, order=order, steps=steps).values
+
+    # ── Cap sigma relatif ke mean forecast agar CI tidak absurd ────────────
+    # Kalau data historis punya outlier besar, sigma mentah bisa jauh lebih besar
+    # dari nilai forecast yang kecil → lower langsung negatif.
+    mean_fc = float(np.mean(fc)) if len(fc) > 0 else 1.0
+    # Cap: sigma tidak boleh lebih dari 20% rata-rata forecast
+    sigma_used = min(sigma, 0.20 * mean_fc) if mean_fc > 0 else sigma
+
+    # ── Bangun CI relatif ke fc, spread membesar seiring horizon ────────────
+    # Floor: lower tidak boleh < 45% forecast.
+    # Dipilih karena di ratio ini lower secara natural monotonic naik mengikuti
+    # forecast tanpa perlu enforce tambahan — cukup max(f-hw, 0.45*f).
+    LOWER_FLOOR_RATIO = 0.45
+
+    upper = []
+    lower = []
+
+    for i, f in enumerate(fc):
+        hw = 1.96 * sigma_used * np.sqrt(i + 1)
+
+        u = f + hw
+        l = max(f - hw, LOWER_FLOOR_RATIO * f, 0.0)
+
+        upper.append(float(u))
+        lower.append(float(l))
+
+    return upper, lower
 
 def _prepare_product(product_name: str):
     """Load, clean & stationarize data untuk 1 produk."""
@@ -244,54 +284,59 @@ def _invert_differencing(fc_diff: pd.Series, last_values: dict, d: int) -> pd.Se
 
     return pd.Series(fc)
 
-
 def run_forecast(product: str, horizon: int = 5) -> dict:
-    """
-    Jalankan auto-ARIMA + forecast untuk 1 produk.
-    Forecast selalu dikembalikan dalam skala Sales asli (invert differencing).
-    Returns:
-      {
-        forecast: list[float],
-        upper: list[float],
-        lower: list[float],
-        order: [p, d, q],
-        aic: float,
-        weeks: list[str],
-        last_sales: float   # nilai Sales terakhir (referensi)
-      }
-    """
     df_p, col_used, d = _prepare_product(product)
-    series = df_p[col_used].dropna()
-    sales_series = df_p["Sales"].dropna()
 
-    # Nilai terakhir untuk invert differencing
-    last_values = {"Sales": float(sales_series.iloc[-1])}
-    if "Sales_Diff" in df_p.columns:
-        last_values["Sales_Diff"] = float(df_p["Sales_Diff"].dropna().iloc[-1])
+    sales_series = df_p["Sales"].copy()
 
-    # Auto ARIMA — selalu fit pada Sales langsung (d di-handle pmdarima)
-    # agar order.d akurat dan invert tidak double-count
+    # ── HANDLE MISSING ─────────────────────────
+    sales_series = sales_series.interpolate()
+    sales_series = sales_series.bfill().ffill()
+
+    # ── VALIDASI DATA ─────────────────────────
+    if len(sales_series.dropna()) < 10:
+        raise ValueError("Data terlalu sedikit / terlalu banyak missing")
+
+    last_sales = float(sales_series.iloc[-1])
+
+    # ── AUTO ARIMA ────────────────────────────
     try:
         am = auto_arima(
-            sales_series,           # <-- pakai Sales asli, bukan diff
-            start_p=0, start_q=0,
-            max_p=3, max_q=3,
-            max_d=2,
+            sales_series,
+            start_p=1,
+            start_q=1,
+            max_p=3,
+            max_q=3,
+            d=1,  # paksa differencing
             seasonal=False,
             stepwise=True,
             suppress_warnings=True,
-            error_action="ignore",
-            maxiter=30,
+            error_action="ignore"
         )
         order = am.order
-        aic   = float(am.aic())
+        aic = float(am.aic())
     except Exception:
-        order = (1, d, 1)
-        aic   = None
+        order = (1, 1, 1)
+        aic = None
 
-    # Forecast pada Sales asli — tidak perlu invert manual
+    # ── FORECAST ARIMA ────────────────────────
     fc_series = _stable_forecast(sales_series, order=order, steps=horizon)
-    upper, lower = _get_confidence_intervals(sales_series, order, horizon)
+
+    # ── DETEKSI MODEL JELEK ───────────────────
+    is_flat = len(set([round(v, 3) for v in fc_series])) == 1
+    is_bad_model = order in [(0,0,0), (0,1,0)]
+
+    # ── FALLBACK MOVING AVERAGE ───────────────
+    if is_flat or is_bad_model:
+        fc_series = weighted_moving_average(sales_series, horizon)
+
+    # ── CLAMP NEGATIVE ────────────────────────
+    fc_series = np.maximum(fc_series, 0)
+
+    # ── CONFIDENCE INTERVAL (anchor ke fc_series final) ───────────
+    upper, lower = _get_confidence_intervals(
+        sales_series, order, horizon, forecast_values=fc_series
+    )
 
     return {
         "forecast":   [round(float(v), 4) for v in fc_series],
@@ -300,9 +345,8 @@ def run_forecast(product: str, horizon: int = 5) -> dict:
         "order":      list(order),
         "aic":        round(aic, 4) if aic is not None else None,
         "weeks":      [f"F+{i+1}" for i in range(horizon)],
-        "last_sales": round(last_values["Sales"], 4),
+        "last_sales": round(last_sales, 4),
     }
-
 
 def run_evaluation(product: str) -> dict:
     """
@@ -406,3 +450,21 @@ def run_eda(product: str) -> dict:
         "rolling_mean":  [round(float(v), 4) for v in rolling_mean],
         "rolling_std":   [round(float(v), 4) for v in rolling_std],
     }
+
+def moving_average_forecast(series, steps=5, window=3):
+    ma = series.rolling(window=window).mean().iloc[-1]
+    return [float(ma)] * steps
+
+def weighted_moving_average(series, steps=5):
+    weights = np.arange(1, 4)  # [1,2,3]
+    last_vals = series.tail(3).values
+
+    if len(last_vals) < 3:
+        return [float(series.iloc[-1])] * steps
+
+    wma = np.dot(last_vals, weights) / weights.sum()
+
+    # bikin sedikit trend biar ga flat
+    trend = (last_vals[-1] - last_vals[0]) / len(last_vals)
+
+    return [float(wma + i * trend) for i in range(1, steps+1)]
