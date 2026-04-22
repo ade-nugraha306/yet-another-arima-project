@@ -4,7 +4,7 @@ import {
   LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer,
   BarChart, Bar, ReferenceLine, ComposedChart,
 } from "recharts";
-import { getEDA, type EDAResponse } from "@/services/api";
+import { getEDA, type EDAResponse, type SeasonalityCell } from "@/services/api";
 
 interface Props {
   product: string;
@@ -87,6 +87,84 @@ function computePACF(values: number[], maxLag: number) {
   }
 
   return pacf;
+}
+
+// ── SEASONALITY HEATMAP ─────────────────────────────
+const WEEK_COLS = ["W1", "W2", "W3", "W4"] as const;
+
+function SeasonalityHeatmap({ data }: { data: SeasonalityCell[] }) {
+  // Build lookup: month+week_in_month → avg_sales
+  const lookup = new Map<string, number>();
+  data.forEach(d => lookup.set(`${d.month}-${d.week_in_month}`, d.avg_sales));
+
+  // Preserve month order as they appear (backend returns sorted by month_num)
+  const months = [...new Set(data.map(d => d.month))];
+
+  // Min/max for intensity scaling
+  const values = data.map(d => d.avg_sales);
+  const minVal = Math.min(...values);
+  const maxVal = Math.max(...values);
+  const range = maxVal - minVal || 1;
+
+  return (
+    <div className="stat-card">
+      <h3 className="text-sm font-semibold text-primary mb-3">🌡️ Seasonality Heatmap</h3>
+      <p className="text-xs text-muted-foreground mb-3">
+        Rata-rata penjualan per minggu dalam bulan — warna lebih terang = lebih tinggi.
+      </p>
+      <div className="overflow-x-auto">
+        <div
+          className="inline-grid gap-1"
+          style={{ gridTemplateColumns: `64px repeat(4, minmax(56px, 1fr))` }}
+        >
+          {/* Header row */}
+          <div />
+          {WEEK_COLS.map(w => (
+            <div key={w} className="text-xs text-muted-foreground text-center font-mono py-1">
+              {w}
+            </div>
+          ))}
+
+          {/* Data rows */}
+          {months.map(month => (
+            <>
+              <div key={month} className="text-xs text-muted-foreground font-mono py-2 flex items-center">
+                {month}
+              </div>
+              {WEEK_COLS.map(wk => {
+                const val = lookup.get(`${month}-${wk}`);
+                if (val === undefined) {
+                  return (
+                    <div
+                      key={wk}
+                      className="rounded text-xs text-center p-2 font-mono text-muted-foreground"
+                      style={{ background: "hsl(220 18% 15%)" }}
+                    >
+                      —
+                    </div>
+                  );
+                }
+                const intensity = (val - minVal) / range;
+                return (
+                  <div
+                    key={wk}
+                    className="rounded text-xs text-center p-2 font-mono font-semibold"
+                    style={{
+                      background: `hsl(174 72% ${15 + intensity * 40}%)`,
+                      color: intensity > 0.55 ? "hsl(220 25% 10%)" : "hsl(210 20% 88%)",
+                    }}
+                    title={`${month} ${wk}: ${val}`}
+                  >
+                    {val.toFixed(0)}
+                  </div>
+                );
+              })}
+            </>
+          ))}
+        </div>
+      </div>
+    </div>
+  );
 }
 
 // ── COMPONENT ───────────────────────────────────────
@@ -286,6 +364,11 @@ const EDA = ({ product }: Props) => {
           PACF dihitung secara aproksimasi untuk visualisasi.
         </p>
       </div>
+
+      {/* Seasonality Heatmap */}
+      {eda.seasonality && eda.seasonality.length > 0 && (
+        <SeasonalityHeatmap data={eda.seasonality} />
+      )}
     </div>
   );
 };

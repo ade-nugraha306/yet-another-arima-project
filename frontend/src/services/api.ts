@@ -29,6 +29,12 @@ export interface EvaluationResponse {
   dates_test: string[];
 }
 
+export interface SeasonalityCell {
+  month: string;
+  week_in_month: string;
+  avg_sales: number;
+}
+
 export interface EDAResponse {
   product: string;
   count: number;
@@ -49,6 +55,7 @@ export interface EDAResponse {
   sales: number[];
   rolling_mean: number[];
   rolling_std: number[];
+  seasonality: SeasonalityCell[];
 }
 
 // ── Helper ───────────────────────────────────────────────────────
