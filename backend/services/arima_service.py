@@ -300,6 +300,31 @@ def _invert_differencing(fc_diff: pd.Series, last_values: dict, d: int) -> pd.Se
 
     return pd.Series(fc)
 
+def _fit_auto_arima(series) -> tuple:
+    """
+    Shared auto_arima fitting — parameter identik dipakai oleh run_forecast
+    dan run_evaluation agar order yang dihasilkan konsisten.
+    Returns: (order: tuple, aic: float | None)
+    """
+    try:
+        am = auto_arima(
+            series,
+            start_p=1,
+            start_q=1,
+            max_p=3,
+            max_q=3,
+            d=1,
+            seasonal=False,
+            stepwise=True,
+            suppress_warnings=True,
+            error_action="ignore",
+            maxiter=50,
+        )
+        return am.order, float(am.aic())
+    except Exception:
+        return (1, 1, 1), None
+
+
 def run_forecast(product: str, horizon: int = 5) -> dict:
     df_p, col_used, d, _cleaning_stats = _prepare_product(product)
 
@@ -316,24 +341,7 @@ def run_forecast(product: str, horizon: int = 5) -> dict:
     last_sales = float(sales_series.iloc[-1])
 
     # ── AUTO ARIMA ────────────────────────────
-    try:
-        am = auto_arima(
-            sales_series,
-            start_p=1,
-            start_q=1,
-            max_p=3,
-            max_q=3,
-            d=1,  # paksa differencing
-            seasonal=False,
-            stepwise=True,
-            suppress_warnings=True,
-            error_action="ignore"
-        )
-        order = am.order
-        aic = float(am.aic())
-    except Exception:
-        order = (1, 1, 1)
-        aic = None
+    order, aic = _fit_auto_arima(sales_series)
 
     # ── FORECAST ARIMA ────────────────────────
     fc_series = _stable_forecast(sales_series, order=order, steps=horizon)
@@ -385,29 +393,15 @@ def run_evaluation(product: str) -> dict:
     if n < 10:
         raise ValueError(f"Data terlalu pendek untuk produk '{product}' (n={n}).")
 
-    # Auto ARIMA pada Sales asli
-    try:
-        am = auto_arima(
-            sales_series,
-            start_p=0, start_q=0,
-            max_p=3, max_q=3,
-            max_d=2,
-            seasonal=False,
-            stepwise=True,
-            suppress_warnings=True,
-            error_action="ignore",
-            maxiter=30,
-        )
-        order = am.order
-        aic = float(am.aic())
-    except Exception:
-        order = (1, d, 1)
-        aic = None
-
     # Train/test split (75/25) — semua pakai Sales asli
     train_size  = int(0.75 * n)
     train_sales = sales_series[:train_size]
     test_sales  = sales_series[train_size:]
+
+    # Auto ARIMA — fit di full sales_series agar order konsisten dengan modeling.
+    # Order selection pakai seluruh data historis; evaluasi performa tetap
+    # menggunakan train/test split → pendekatan lazim di literatur forecasting.
+    order, aic = _fit_auto_arima(sales_series)
 
     fc = _stable_forecast(train_sales, order=order, steps=len(test_sales))
 
