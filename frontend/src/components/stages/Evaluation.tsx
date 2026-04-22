@@ -52,28 +52,24 @@ const Evaluation = ({ product }: Props) => {
   }
 
   // ── BUILD DATA ─────────────────────────────────────
+  // fitted dari backend = forecast di test period (panjang = test set)
+  // bukan in-sample fitted values untuk train
 
   const trainLen = evaluation.actual_train.length;
 
   const trainData = evaluation.actual_train.map((sales, i) => ({
     week: evaluation.dates_train[i],
     sales,
-    fitted: evaluation.fitted?.[i] ?? null,
-    predicted: null,
+    predicted: null as number | null,
     type: "train",
   }));
 
-  const testData = evaluation.actual_test.map((sales, i) => {
-    const predIndex = trainLen + i;
-
-    return {
-      week: evaluation.dates_test[i],
-      sales,
-      fitted: null,
-      predicted: evaluation.fitted?.[predIndex] ?? null,
-      type: "test",
-    };
-  });
+  const testData = evaluation.actual_test.map((sales, i) => ({
+    week: evaluation.dates_test[i],
+    sales,
+    predicted: evaluation.fitted?.[i] ?? null,  // index i, bukan trainLen + i
+    type: "test",
+  }));
 
   const splitData = [...trainData, ...testData];
   const splitWeek = evaluation.dates_train[trainLen - 1];
@@ -154,9 +150,14 @@ const Evaluation = ({ product }: Props) => {
 
       {/* CHART */}
       <div className="stat-card">
-        <h3 className="text-sm font-semibold text-primary mb-3">
+        <h3 className="text-sm font-semibold text-primary mb-2">
           📊 Train-Test Split & Prediction
         </h3>
+        <div className="flex gap-4 mb-3">
+          <span className="text-xs px-2 py-1 rounded bg-primary/15 text-primary">■ Train ({trainLen} minggu)</span>
+          <span className="text-xs px-2 py-1 rounded bg-warning/15 text-warning">■ Test ({evaluation.actual_test.length} minggu)</span>
+          <span className="text-xs px-2 py-1 rounded bg-purple-500/15 text-purple-400">■ Predicted</span>
+        </div>
 
         <ResponsiveContainer width="100%" height={260}>
           <LineChart data={splitData}>
@@ -189,17 +190,9 @@ const Evaluation = ({ product }: Props) => {
             />
 
             <Line
-              dataKey="fitted"
-              stroke="hsl(262 60% 58%)"
-              strokeDasharray="4 2"
-              dot={false}
-              name="Fitted"
-              connectNulls
-            />
-
-            <Line
               dataKey="predicted"
-              stroke="hsl(35 92% 60%)"
+              stroke="hsl(262 60% 58%)"
+              strokeWidth={2}
               strokeDasharray="4 2"
               dot={false}
               name="Test Prediction"
@@ -238,9 +231,26 @@ const Evaluation = ({ product }: Props) => {
               Growth:
               <span className="ml-2 font-mono font-semibold">
                 {avgGrowth.toFixed(1)}%
-              </span>
+              </span>{" "}
+              selama {evaluation.actual_train.length + evaluation.actual_test.length} minggu
             </div>
           </div>
+        </div>
+
+        <div className="mt-4 grid grid-cols-3 gap-2 text-center text-xs">
+          {([
+            { label: "SLOW",   range: "< 3%",      color: "bg-destructive/15 text-destructive" },
+            { label: "MEDIUM", range: "3% – 15%",  color: "bg-warning/15 text-warning" },
+            { label: "FAST",   range: "> 15%",      color: "bg-success/15 text-success" },
+          ] as const).map(t => (
+            <div
+              key={t.label}
+              className={`p-2 rounded ${t.color} ${trendClass === t.label ? "ring-1 ring-current" : "opacity-50"}`}
+            >
+              <div className="font-bold">{t.label}</div>
+              <div>{t.range}</div>
+            </div>
+          ))}
         </div>
       </div>
     </div>
