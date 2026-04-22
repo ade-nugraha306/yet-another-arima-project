@@ -435,6 +435,48 @@ def run_evaluation(product: str) -> dict:
     }
 
 
+# Mapping week number → nama bulan (konsisten dengan start_date 2025-01-01)
+_WEEK_TO_MONTH = {
+    w: pd.Timestamp("2025-01-01") + pd.to_timedelta((w - 1) * 7, unit="D")
+    for w in range(1, 53)
+}
+
+
+def _build_seasonality(product: str) -> list[dict]:
+    """
+    Agregasi rata-rata Sales per (bulan, minggu-dalam-bulan) dari data mentah.
+    Menggunakan kolom Week asli dari df_long — bukan derived dari Date —
+    sehingga konsisten dengan struktur Excel.
+
+    Return: list of { month, week_in_month, avg_sales }
+    """
+    df_long = _load_df_long()
+    df_p = df_long[df_long["Produk"] == product][["Week", "Sales"]].copy()
+    df_p["Sales"] = pd.to_numeric(df_p["Sales"], errors="coerce")
+    df_p = df_p.dropna(subset=["Sales"])
+
+    df_p["_date"]          = df_p["Week"].map(_WEEK_TO_MONTH)
+    df_p["_month_num"]     = df_p["_date"].dt.month
+    df_p["_month_label"]   = df_p["_date"].dt.strftime("%b")
+    df_p["_week_in_month"] = df_p["Week"].apply(
+        lambda w: f"W{((w - 1) % 4) + 1}"
+    )
+
+    grouped = (
+        df_p.groupby(["_month_num", "_month_label", "_week_in_month"], sort=True)["Sales"]
+        .mean()
+        .reset_index()
+    )
+
+    return [
+        {
+            "month":         row["_month_label"],
+            "week_in_month": row["_week_in_month"],
+            "avg_sales":     round(float(row["Sales"]), 4),
+        }
+        for _, row in grouped.iterrows()
+    ]
+
 def run_eda(product: str) -> dict:
     """
     Basic EDA stats + rolling mean untuk 1 produk.
@@ -474,6 +516,7 @@ def run_eda(product: str) -> dict:
         "sales":            [round(float(v), 4) for v in s],
         "rolling_mean":     [round(float(v), 4) for v in rolling_mean],
         "rolling_std":      [round(float(v), 4) for v in rolling_std],
+        "seasonality":      _build_seasonality(product),
     }
 
 def moving_average_forecast(series, steps=5, window=3):
