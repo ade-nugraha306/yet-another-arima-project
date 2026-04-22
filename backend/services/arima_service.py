@@ -103,38 +103,54 @@ def _load_df_long() -> pd.DataFrame:
 # FUNGSI UTILITAS (diambil dari arima_ta.py)
 # ---------------------------------------------------------------
 
-def _clean_all_numeric(df: pd.DataFrame) -> pd.DataFrame:
+def _clean_all_numeric(df: pd.DataFrame) -> tuple[pd.DataFrame, dict]:
     # Hanya bersihkan kolom Sales saja — clipping semua kolom numerik
     # (termasuk Week 1-40) bisa merusak nilai Sales secara tidak langsung
-    if "Sales" not in df.columns:
-        return df
+    cleaning_stats = {
+        "missing_before": 0,
+        "missing_after": 0,
+        "outliers_before": 0,
+        "outliers_after": 0,
+        "method": "Interpolasi linear + IQR clipping (1.5×IQR)",
+    }
 
+    if "Sales" not in df.columns:
+        return df, cleaning_stats
+
+    cleaning_stats["missing_before"] = int(df["Sales"].isna().sum())
     df["Sales"] = df["Sales"].interpolate(method="linear")
+    cleaning_stats["missing_after"] = int(df["Sales"].isna().sum())
 
     # IQR clipping hanya jika ada variasi cukup (hindari data konstan)
     Q1, Q3 = df["Sales"].quantile([0.25, 0.75])
     IQR = Q3 - Q1
     if IQR > 0:
-        df["Sales"] = df["Sales"].clip(Q1 - 1.5 * IQR, Q3 + 1.5 * IQR)
+        lower_bound = Q1 - 1.5 * IQR
+        upper_bound = Q3 + 1.5 * IQR
+        cleaning_stats["outliers_before"] = int(
+            ((df["Sales"] < lower_bound) | (df["Sales"] > upper_bound)).sum()
+        )
+        df["Sales"] = df["Sales"].clip(lower_bound, upper_bound)
+        cleaning_stats["outliers_after"] = 0  # by definition setelah clip
 
-    return df
+    return df, cleaning_stats
 
 
 def _check_stationarity(series: pd.Series):
     from statsmodels.tsa.stattools import adfuller
     series = series.dropna()
     if series.nunique() <= 1:
-        return True, 0.0
+        return True, 0.0, 0.0  # stationary, p_value, adf_stat
     try:
         res = adfuller(series, autolag="AIC")
-        return res[1] <= 0.05, res[1]
+        return res[1] <= 0.05, res[1], res[0]  # stationary, p_value, adf_stat
     except Exception:
-        return False, 1.0
+        return False, 1.0, 0.0
 
 
 def _make_stationary(df: pd.DataFrame):
     s = df["Sales"]
-    is_stat, _ = _check_stationarity(s)
+    is_stat, _, _ = _check_stationarity(s)
     if is_stat:
         return df, "Sales", 0
     df["Sales_Diff"] = s.diff()
@@ -234,9 +250,9 @@ def _prepare_product(product_name: str):
     if df_p.empty:
         raise ValueError(f"Produk '{product_name}' tidak ditemukan.")
     df_p = df_p.set_index("Date").sort_index()
-    df_p = _clean_all_numeric(df_p)
+    df_p, cleaning_stats = _clean_all_numeric(df_p)
     df_p, col_used, d = _make_stationary(df_p)
-    return df_p, col_used, d
+    return df_p, col_used, d, cleaning_stats
 
 
 # ---------------------------------------------------------------
@@ -285,7 +301,7 @@ def _invert_differencing(fc_diff: pd.Series, last_values: dict, d: int) -> pd.Se
     return pd.Series(fc)
 
 def run_forecast(product: str, horizon: int = 5) -> dict:
-    df_p, col_used, d = _prepare_product(product)
+    df_p, col_used, d, _cleaning_stats = _prepare_product(product)
 
     sales_series = df_p["Sales"].copy()
 
@@ -362,7 +378,7 @@ def run_evaluation(product: str) -> dict:
         dates_test:  list[str],
       }
     """
-    df_p, col_used, d = _prepare_product(product)
+    df_p, col_used, d, _cleaning_stats = _prepare_product(product)
     sales_series = df_p["Sales"].dropna()
 
     n = len(sales_series)
@@ -424,8 +440,10 @@ def run_eda(product: str) -> dict:
     Basic EDA stats + rolling mean untuk 1 produk.
     Returns dict berisi statistik & data untuk plot.
     """
-    df_p, col_used, d = _prepare_product(product)
+    df_p, col_used, d, cleaning_stats = _prepare_product(product)
     s = df_p["Sales"].dropna()
+
+    is_stationary, adf_p_value, adf_statistic = _check_stationarity(s)
 
     rolling_mean = s.rolling(window=4, min_periods=1).mean()
     rolling_std  = s.rolling(window=4, min_periods=1).std().fillna(0)
@@ -437,18 +455,25 @@ def run_eda(product: str) -> dict:
             return [str(i) for i in idx]
 
     return {
-        "product":       product,
-        "count":         int(len(s)),
-        "mean":          round(float(s.mean()), 4),
-        "std":           round(float(s.std()), 4),
-        "min":           round(float(s.min()), 4),
-        "max":           round(float(s.max()), 4),
-        "stationary":    bool(_check_stationarity(s)[0]),
-        "d":             d,
-        "dates":         _to_dates(s.index),
-        "sales":         [round(float(v), 4) for v in s],
-        "rolling_mean":  [round(float(v), 4) for v in rolling_mean],
-        "rolling_std":   [round(float(v), 4) for v in rolling_std],
+        "product":          product,
+        "count":            int(len(s)),
+        "mean":             round(float(s.mean()), 4),
+        "std":              round(float(s.std()), 4),
+        "min":              round(float(s.min()), 4),
+        "max":              round(float(s.max()), 4),
+        "stationary":       bool(is_stationary),
+        "d":                d,
+        "adf_statistic":    round(float(adf_statistic), 4),
+        "adf_p_value":      round(float(adf_p_value), 4),
+        "missing_before":   cleaning_stats["missing_before"],
+        "missing_after":    cleaning_stats["missing_after"],
+        "outliers_before":  cleaning_stats["outliers_before"],
+        "outliers_after":   cleaning_stats["outliers_after"],
+        "cleaning_method":  cleaning_stats["method"],
+        "dates":            _to_dates(s.index),
+        "sales":            [round(float(v), 4) for v in s],
+        "rolling_mean":     [round(float(v), 4) for v in rolling_mean],
+        "rolling_std":      [round(float(v), 4) for v in rolling_std],
     }
 
 def moving_average_forecast(series, steps=5, window=3):
