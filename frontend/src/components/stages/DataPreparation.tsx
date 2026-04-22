@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { CheckCircle2, Beaker, Loader2 } from "lucide-react";
+import { CheckCircle2, AlertTriangle, Beaker, ArrowDownUp, Loader2 } from "lucide-react";
 import { getEDA, type EDAResponse } from "@/services/api";
 
 interface Props {
@@ -45,64 +45,104 @@ const DataPreparation = ({ product }: Props) => {
     return <p className="text-sm text-destructive py-4">{error ?? "Data tidak tersedia"}</p>;
   }
 
-  const dValue = eda.d;
-  const isStationary = eda.stationary;
+  const {
+    d,
+    stationary,
+    adf_statistic,
+    adf_p_value,
+    missing_before,
+    missing_after,
+    outliers_before,
+    outliers_after,
+    cleaning_method,
+  } = eda;
 
   return (
     <div className="space-y-6 animate-fade-in">
       <div>
         <span className="section-badge">Tahap 3</span>
-        <h2 className="section-header mt-3">Data Preparation</h2>
+        <h2 className="section-header mt-3">Data Preparation & Cleaning</h2>
         <p className="text-muted-foreground mt-1">
-          Tahap ini mempersiapkan data sebelum modeling, termasuk transformasi dan uji stasioneritas.
+          Membersihkan data dari missing values dan outlier, serta menguji stasioneritas.
         </p>
       </div>
 
-      {/* Cleaning Info */}
+      {/* Cleaning Method */}
       <div className="stat-card glow-border">
         <h3 className="text-sm font-semibold text-primary mb-2 flex items-center gap-2">
-          <Beaker className="w-4 h-4" /> Proses Preparation
+          <Beaker className="w-4 h-4" /> Metode Cleaning
         </h3>
-
-        <ul className="text-sm text-muted-foreground space-y-1">
-          <li>• Penanganan missing values (interpolasi / forward fill)</li>
-          <li>• Deteksi dan penyesuaian outlier</li>
-          <li>• Transformasi untuk memastikan stasioneritas</li>
-        </ul>
-
-        <p className="text-xs text-muted-foreground mt-3 italic">
-          Detail numerik cleaning belum tersedia dari backend.
+        <p className="text-sm text-secondary-foreground font-mono bg-secondary/50 rounded p-3">
+          {cleaning_method}
         </p>
       </div>
 
-      {/* Stationarity */}
-      <div className="stat-card">
-        <h3 className="text-sm font-semibold text-primary mb-3 flex items-center gap-2">
-          <CheckCircle2 className="w-4 h-4" /> Uji Stasioneritas (ADF)
-        </h3>
-
-        <div className="grid grid-cols-2 gap-4 text-center">
-          <div>
-            <div className={`text-xl font-bold font-mono ${isStationary ? "text-success" : "text-warning"}`}>
-              {isStationary ? "Stasioner" : "Tidak Stasioner"}
+      {/* Missing Values & Outliers */}
+      <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+        <div className="stat-card">
+          <h3 className="text-sm font-semibold text-muted-foreground mb-3 flex items-center gap-2">
+            <AlertTriangle className="w-4 h-4 text-warning" /> Missing Values
+          </h3>
+          <div className="flex items-center gap-6">
+            <div className="text-center">
+              <div className="text-2xl font-bold text-destructive">{missing_before}</div>
+              <div className="text-xs text-muted-foreground">Sebelum</div>
             </div>
-            <div className="text-xs text-muted-foreground">Status</div>
-          </div>
-
-          <div>
-            <div className="text-xl font-bold font-mono text-primary">
-              d = {dValue}
+            <ArrowDownUp className="w-4 h-4 text-muted-foreground" />
+            <div className="text-center">
+              <div className="text-2xl font-bold text-success">{missing_after}</div>
+              <div className="text-xs text-muted-foreground">Sesudah</div>
             </div>
-            <div className="text-xs text-muted-foreground">Differencing Order</div>
           </div>
         </div>
 
-        <div className={`mt-3 p-2 rounded text-xs text-center ${
-          isStationary ? "bg-success/10 text-success" : "bg-warning/10 text-warning"
+        <div className="stat-card">
+          <h3 className="text-sm font-semibold text-muted-foreground mb-3 flex items-center gap-2">
+            <AlertTriangle className="w-4 h-4 text-warning" /> Outliers
+          </h3>
+          <div className="flex items-center gap-6">
+            <div className="text-center">
+              <div className="text-2xl font-bold text-destructive">{outliers_before}</div>
+              <div className="text-xs text-muted-foreground">Sebelum</div>
+            </div>
+            <ArrowDownUp className="w-4 h-4 text-muted-foreground" />
+            <div className="text-center">
+              <div className="text-2xl font-bold text-success">{outliers_after}</div>
+              <div className="text-xs text-muted-foreground">Sesudah</div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      {/* ADF Test */}
+      <div className="stat-card">
+        <h3 className="text-sm font-semibold text-primary mb-3 flex items-center gap-2">
+          <CheckCircle2 className="w-4 h-4" /> Augmented Dickey-Fuller Test
+        </h3>
+
+        <div className="grid grid-cols-3 gap-4 text-center">
+          <div>
+            <div className="text-xl font-bold font-mono text-foreground">{adf_statistic}</div>
+            <div className="text-xs text-muted-foreground">ADF Statistic</div>
+          </div>
+          <div>
+            <div className={`text-xl font-bold font-mono ${adf_p_value < 0.05 ? "text-success" : "text-warning"}`}>
+              {adf_p_value}
+            </div>
+            <div className="text-xs text-muted-foreground">p-value</div>
+          </div>
+          <div>
+            <div className="text-xl font-bold font-mono text-primary">d = {d}</div>
+            <div className="text-xs text-muted-foreground">Differencing</div>
+          </div>
+        </div>
+
+        <div className={`mt-3 p-2 rounded text-xs font-medium text-center ${
+          stationary ? "bg-success/10 text-success" : "bg-warning/10 text-warning"
         }`}>
-          {isStationary
-            ? `✓ Data sudah stasioner (d=${dValue})`
-            : `⚠ Differencing diperlukan (d=${dValue})`}
+          {stationary
+            ? `✓ Data stasioner setelah differencing orde ${d} (p-value < 0.05)`
+            : `⚠ Data tidak stasioner (p-value = ${adf_p_value})`}
         </div>
       </div>
     </div>

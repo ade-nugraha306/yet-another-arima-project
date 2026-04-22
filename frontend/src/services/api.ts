@@ -38,6 +38,13 @@ export interface EDAResponse {
   max: number;
   stationary: boolean;
   d: number;
+  adf_statistic: number;
+  adf_p_value: number;
+  missing_before: number;
+  missing_after: number;
+  outliers_before: number;
+  outliers_after: number;
+  cleaning_method: string;
   dates: string[];
   sales: number[];
   rolling_mean: number[];
