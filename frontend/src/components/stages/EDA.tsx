@@ -2,248 +2,115 @@ import { useEffect, useState } from "react";
 import { Loader2 } from "lucide-react";
 import {
   LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer,
-  BarChart, Bar, ReferenceLine, ComposedChart,
+  BarChart, Bar, ReferenceLine, ComposedChart, Legend,
 } from "recharts";
-import { getEDA, type EDAResponse, type SeasonalityCell } from "@/services/api";
+import { getEDA, type EDAResponse, type BoxplotStats } from "@/services/api";
 
 interface Props {
-  product: string;
+  family: string;
 }
 
-// ── ACF ─────────────────────────────────────────────
-function computeACF(values: number[], maxLag: number) {
-  const n = values.length;
-  const mean = values.reduce((a, b) => a + b, 0) / n;
-  const variance = values.reduce((a, b) => a + (b - mean) ** 2, 0) / n;
-
-  // ❗ Handle variance = 0
-  if (variance === 0) {
-    return Array.from({ length: maxLag + 1 }, (_, lag) => ({
-      lag,
-      acf: lag === 0 ? 1 : 0,
-      upper: 0,
-      lower: 0,
-    }));
-  }
-
-  const ci = 1.96 / Math.sqrt(n);
-  const result = [];
-
-  for (let lag = 0; lag <= maxLag; lag++) {
-    let cov = 0;
-    for (let i = lag; i < n; i++) {
-      cov += (values[i] - mean) * (values[i - lag] - mean);
-    }
-    result.push({
-      lag,
-      acf: lag === 0 ? 1 : (cov / n) / variance,
-      upper: ci,
-      lower: -ci,
-    });
-  }
-
-  return result;
-}
-
-// ── PACF (approx) ───────────────────────────────────
-function computePACF(values: number[], maxLag: number) {
-  const acf = computeACF(values, maxLag);
-  const n = values.length;
-  const ci = 1.96 / Math.sqrt(n);
-
-  const pacf: { lag: number; pacf: number; upper: number; lower: number }[] = [];
-
-  for (let k = 0; k <= maxLag; k++) {
-    if (k === 0) {
-      pacf.push({ lag: 0, pacf: 1, upper: ci, lower: -ci });
-      continue;
-    }
-    if (k === 1) {
-      pacf.push({ lag: 1, pacf: acf[1].acf, upper: ci, lower: -ci });
-      continue;
-    }
-
-    const phi: number[] = new Array(k).fill(0);
-    phi[0] = acf[1].acf;
-
-    for (let j = 2; j <= k; j++) {
-      let num = acf[j].acf;
-      for (let i = 1; i < j; i++) num -= phi[i - 1] * acf[j - i].acf;
-
-      let den = 1;
-      for (let i = 1; i < j; i++) den -= phi[i - 1] * acf[i].acf;
-
-      const newPhi = num / den;
-      const prevPhi = [...phi];
-
-      for (let i = 0; i < j - 1; i++) {
-        phi[i] = prevPhi[i] - newPhi * prevPhi[j - 2 - i];
-      }
-
-      phi[j - 1] = newPhi;
-    }
-
-    pacf.push({ lag: k, pacf: phi[k - 1], upper: ci, lower: -ci });
-  }
-
-  return pacf;
-}
-
-// ── SEASONALITY HEATMAP ─────────────────────────────
-const WEEK_COLS = ["W1", "W2", "W3", "W4"] as const;
-
-function SeasonalityHeatmap({ data }: { data: SeasonalityCell[] }) {
-  // Build lookup: month+week_in_month → avg_sales
-  const lookup = new Map<string, number>();
-  data.forEach(d => lookup.set(`${d.month}-${d.week_in_month}`, d.avg_sales));
-
-  // Preserve month order as they appear (backend returns sorted by month_num)
-  const months = [...new Set(data.map(d => d.month))];
-
-  // Min/max for intensity scaling
-  const values = data.map(d => d.avg_sales);
-  const minVal = Math.min(...values);
-  const maxVal = Math.max(...values);
-  const range = maxVal - minVal || 1;
-
+function BoxplotViz({ stats, label, color }: { stats: BoxplotStats; label: string; color: string }) {
+  const range = stats.max - stats.min || 1;
+  const pct = (v: number) => ((v - stats.min) / range) * 100;
   return (
-    <div className="stat-card">
-      <h3 className="text-sm font-semibold text-primary mb-3">🌡️ Seasonality Heatmap</h3>
-      <p className="text-xs text-muted-foreground mb-3">
-        Rata-rata penjualan per minggu dalam bulan — warna lebih terang = lebih tinggi.
-      </p>
-      <div className="overflow-x-auto">
+    <div className="space-y-1">
+      <p className="text-xs font-semibold text-muted-foreground mb-2">{label}</p>
+      <div className="relative h-8 bg-secondary/30 rounded">
         <div
-          className="inline-grid gap-1"
-          style={{ gridTemplateColumns: `64px repeat(4, minmax(56px, 1fr))` }}
-        >
-          {/* Header row */}
-          <div />
-          {WEEK_COLS.map(w => (
-            <div key={w} className="text-xs text-muted-foreground text-center font-mono py-1">
-              {w}
-            </div>
-          ))}
-
-          {/* Data rows */}
-          {months.map(month => (
-            <>
-              <div key={month} className="text-xs text-muted-foreground font-mono py-2 flex items-center">
-                {month}
-              </div>
-              {WEEK_COLS.map(wk => {
-                const val = lookup.get(`${month}-${wk}`);
-                if (val === undefined) {
-                  return (
-                    <div
-                      key={wk}
-                      className="rounded text-xs text-center p-2 font-mono text-muted-foreground"
-                      style={{ background: "hsl(220 18% 15%)" }}
-                    >
-                      —
-                    </div>
-                  );
-                }
-                const intensity = (val - minVal) / range;
-                return (
-                  <div
-                    key={wk}
-                    className="rounded text-xs text-center p-2 font-mono font-semibold"
-                    style={{
-                      background: `hsl(174 72% ${15 + intensity * 40}%)`,
-                      color: intensity > 0.55 ? "hsl(220 25% 10%)" : "hsl(210 20% 88%)",
-                    }}
-                    title={`${month} ${wk}: ${val}`}
-                  >
-                    {val.toFixed(0)}
-                  </div>
-                );
-              })}
-            </>
-          ))}
-        </div>
+          className="absolute h-full rounded"
+          style={{ left: `${pct(stats.q1)}%`, width: `${pct(stats.q3) - pct(stats.q1)}%`, background: color, opacity: 0.6 }}
+        />
+        <div className="absolute h-full w-0.5 bg-white" style={{ left: `${pct(stats.median)}%` }} />
+        <div className="absolute top-1/2 -translate-y-1/2 h-0.5 bg-muted-foreground" style={{ left: `${pct(stats.min)}%`, width: `${pct(stats.q1) - pct(stats.min)}%` }} />
+        <div className="absolute top-1/2 -translate-y-1/2 h-0.5 bg-muted-foreground" style={{ left: `${pct(stats.q3)}%`, width: `${pct(stats.max) - pct(stats.q3)}%` }} />
+      </div>
+      <div className="flex justify-between text-[10px] text-muted-foreground font-mono mt-1">
+        <span>{stats.min.toFixed(0)}</span><span>Q1:{stats.q1.toFixed(0)}</span><span>Med:{stats.median.toFixed(0)}</span><span>Q3:{stats.q3.toFixed(0)}</span><span>{stats.max.toFixed(0)}</span>
       </div>
     </div>
   );
 }
 
-// ── COMPONENT ───────────────────────────────────────
-const EDA = ({ product }: Props) => {
+const EDA = ({ family }: Props) => {
   const [eda, setEda] = useState<EDAResponse | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
-  useEffect(() => {
-    let cancelled = false;
 
+  useEffect(() => {
+    if (!family) return;
+    let cancelled = false;
     async function load() {
       setLoading(true);
       setError(null);
-
       try {
-        const data = await getEDA(product);
+        const data = await getEDA(family);
         if (!cancelled) setEda(data);
       } catch (e: unknown) {
-        if (!cancelled) {
-          setError(e instanceof Error ? e.message : "Gagal memuat EDA");
-        }
+        if (!cancelled) setError(e instanceof Error ? e.message : "Gagal memuat EDA");
       } finally {
         if (!cancelled) setLoading(false);
       }
     }
-
     load();
-    return () => { cancelled = true };
-  }, [product]);
+    return () => { cancelled = true; };
+  }, [family]);
 
-  if (loading) {
-    return (
-      <div className="flex items-center gap-2 text-muted-foreground text-sm py-8">
-        <Loader2 className="w-4 h-4 animate-spin" /> Memuat EDA…
-      </div>
-    );
-  }
+  if (loading) return <div className="flex items-center gap-2 text-muted-foreground text-sm py-8"><Loader2 className="w-4 h-4 animate-spin" /> Memuat EDA…</div>;
+  if (error || !eda) return <p className="text-sm text-destructive py-4">{error ?? "Data tidak tersedia"}</p>;
 
-  if (error || !eda) {
-    return <p className="text-sm text-destructive py-4">{error ?? "Data tidak tersedia"}</p>;
-  }
+  const salesBefore = eda.sales_before;
+  const salesAfter = eda.sales_after;
+  const weeks = eda.weeks;
+  const trendData = weeks.map((w, i) => ({ week: w, before: salesBefore[i], after: salesAfter[i] }));
 
-  // ── DATA ──────────────────────────────────────────
+  const histBefore = eda.distribution_before || [];
+  const histAfter = eda.distribution_after || [];
+  const acfBefore = eda.acf_before || [];
+  const acfAfter = eda.acf_after || [];
+  const pacfBefore = eda.pacf_before || [];
+  const pacfAfter = eda.pacf_after || [];
+  const boxBeforeSum = eda.boxplot_before_summary;
+  const boxAfterSum = eda.boxplot_after_summary;
 
-  const timeSeriesData = eda.dates.map((d, i) => ({
-    week: d,
-    sales: eda.sales[i],
-    rollingMean: eda.rolling_mean?.[i],
-    rollingStd: eda.rolling_std?.[i],
+  const n = salesAfter.length;
+  const ci = 1.96 / Math.sqrt(n);
+
+  const rollingWindow = 4;
+  const computeRollingMean = (arr: number[], window: number) => {
+    return arr.map((_, idx) => {
+      const start = Math.max(0, idx - window + 1);
+      const slice = arr.slice(start, idx + 1);
+      return slice.reduce((a, b) => a + b, 0) / slice.length;
+    });
+  };
+  const computeRollingStd = (arr: number[], window: number) => {
+    return arr.map((_, idx) => {
+      const start = Math.max(0, idx - window + 1);
+      const slice = arr.slice(start, idx + 1);
+      const mean = slice.reduce((a, b) => a + b, 0) / slice.length;
+      const variance = slice.reduce((a, b) => a + (b - mean) ** 2, 0) / slice.length;
+      return Math.sqrt(variance);
+    });
+  };
+  const rollingMeanBefore = computeRollingMean(salesBefore, rollingWindow);
+  const rollingStdBefore = computeRollingStd(salesBefore, rollingWindow);
+  const rollingMeanAfter = eda.rolling_mean ?? computeRollingMean(salesAfter, rollingWindow);
+  const rollingStdAfter = eda.rolling_std ?? computeRollingStd(salesAfter, rollingWindow);
+  const rollingData = weeks.map((w, i) => ({
+    week: w,
+    before: salesBefore[i],
+    after: salesAfter[i],
+    rollingMeanBefore: rollingMeanBefore[i],
+    rollingStdBefore: rollingStdBefore[i],
+    rollingMeanAfter: rollingMeanAfter[i],
+    rollingStdAfter: rollingStdAfter[i],
   }));
 
-  // Histogram (safe)
-  const minSales = Math.min(...eda.sales);
-  const maxSales = Math.max(...eda.sales);
-  const range = maxSales - minSales;
-  const binSize = range === 0 ? 1 : Math.ceil(range / 8);
+  const previewData = trendData.slice(0, 5);
 
-  const histBins = [];
-  for (let b = minSales; b < maxSales; b += binSize) {
-    const count = eda.sales.filter(s => s >= b && s < b + binSize).length;
-    histBins.push({ range: `${b}-${b + binSize}`, count });
-  }
-
-  const maxLag = Math.min(20, Math.floor(eda.sales.length / 2));
-  const acfData = computeACF(eda.sales, maxLag);
-  const pacfData = computePACF(eda.sales, maxLag);
-
-  // ── STYLES ────────────────────────────────────────
-
-  const tooltipStyle = {
-    contentStyle: {
-      background: "hsl(220 22% 13%)",
-      border: "1px solid hsl(220 18% 20%)",
-      borderRadius: 8,
-      color: "hsl(210 20% 92%)",
-    },
-  };
-
+  const tooltipStyle = { contentStyle: { background: "hsl(220 22% 13%)", border: "1px solid hsl(220 18% 20%)", borderRadius: 8, color: "hsl(210 20% 92%)" } };
   const gridStyle = { strokeDasharray: "3 3", stroke: "hsl(220 18% 20%)" };
   const tickStyle = { fontSize: 10, fill: "hsl(215 15% 55%)" };
 
@@ -252,18 +119,16 @@ const EDA = ({ product }: Props) => {
       <div>
         <span className="section-badge">Tahap 4</span>
         <h2 className="section-header mt-3">Exploratory Data Analysis</h2>
-        <p className="text-muted-foreground mt-1">
-          Mengeksplorasi pola, tren, dan distribusi data penjualan.
-        </p>
+        <p className="text-muted-foreground mt-1">Mengeksplorasi pola, tren, dan distribusi data penjualan family <span className="text-primary font-semibold">{family}</span>.</p>
       </div>
 
-      {/* Summary */}
+      {/* Summary Stats */}
       <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
         {[
           { label: "Mean", value: eda.mean.toFixed(2) },
           { label: "Std Dev", value: eda.std.toFixed(2) },
-          { label: "Min", value: eda.min },
-          { label: "Max", value: eda.max },
+          { label: "Min", value: eda.min.toFixed(2) },
+          { label: "Max", value: eda.max.toFixed(2) },
         ].map(s => (
           <div key={s.label} className="stat-card text-center">
             <div className="text-xs text-muted-foreground mb-1">{s.label}</div>
@@ -272,103 +137,263 @@ const EDA = ({ product }: Props) => {
         ))}
       </div>
 
-      {/* Time Series */}
+      {/* 1. Weekly Sales Trend */}
       <div className="stat-card">
-        <h3 className="text-sm font-semibold text-primary mb-2">📈 Time Series</h3>
-        <p className="text-xs text-muted-foreground mb-2">
-          Pola penjualan dari waktu ke waktu (trend & fluktuasi).
-        </p>
-
+        <h3 className="text-sm font-semibold text-primary mb-2">📈 Weekly Sales Trend — Before vs After Cleaning</h3>
         <ResponsiveContainer width="100%" height={250}>
-          <LineChart data={timeSeriesData}>
+          <LineChart data={trendData}>
             <CartesianGrid {...gridStyle} />
             <XAxis dataKey="week" tick={tickStyle} interval={4} />
             <YAxis tick={tickStyle} />
             <Tooltip {...tooltipStyle} />
-            <Line type="monotone" dataKey="sales" stroke="hsl(174 72% 50%)" strokeWidth={2} dot={false} />
+            <Legend wrapperStyle={{ fontSize: 11 }} />
+            <Line type="monotone" dataKey="before" stroke="hsl(35 92% 60%)" strokeWidth={1.5} dot={false} name="Sebelum Cleaning" />
+            <Line type="monotone" dataKey="after"  stroke="hsl(174 72% 50%)" strokeWidth={2} dot={false} name="Setelah Cleaning" />
           </LineChart>
         </ResponsiveContainer>
       </div>
 
-      {/* Histogram */}
+      {/* Preview Data Family (5 minggu pertama) */}
       <div className="stat-card">
-        <h3 className="text-sm font-semibold text-primary mb-3">Distribusi</h3>
-        <ResponsiveContainer width="100%" height={200}>
-          <BarChart data={histBins}>
-            <CartesianGrid {...gridStyle} />
-            <XAxis dataKey="range" tick={tickStyle} />
-            <YAxis tick={tickStyle} />
-            <Tooltip {...tooltipStyle} />
-            <Bar dataKey="count" fill="hsl(262 60% 58%)" />
-          </BarChart>
-        </ResponsiveContainer>
+        <h3 className="text-sm font-semibold text-primary mb-3">📋 Preview Data Family (5 minggu pertama)</h3>
+        <div className="overflow-x-auto">
+          <table className="w-full text-sm">
+            <thead className="border-b border-secondary">
+              <tr>
+                <th className="text-left py-1">Minggu</th>
+                <th className="text-right py-1">Total Sales (Sebelum Cleaning)</th>
+                <th className="text-right py-1">Total Sales (Setelah Cleaning)</th>
+              </tr>
+            </thead>
+            <tbody>
+              {previewData.map((item, idx) => (
+                <tr key={idx} className="border-b border-secondary/50">
+                  <td className="py-1 text-xs">{item.week}</td>
+                  <td className="py-1 text-right font-mono">{item.before.toFixed(2)}</td>
+                  <td className="py-1 text-right font-mono">{item.after.toFixed(2)}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+        <p className="text-xs text-muted-foreground mt-2">
+          Menampilkan 5 minggu pertama dari total {eda.weeks.length} minggu.
+        </p>
       </div>
 
-      {/* Rolling */}
-      <div className="stat-card">
-        <h3 className="text-sm font-semibold text-primary mb-3">
-          Rolling Mean & Std
-        </h3>
+      {/* 2. Distribusi (Histogram) — Before vs After */}
+      <div className="grid md:grid-cols-2 gap-4">
+        <div className="stat-card">
+          <h3 className="text-sm font-semibold text-primary mb-2">📊 Distribusi — Sebelum Cleaning</h3>
+          <ResponsiveContainer width="100%" height={200}>
+            <BarChart data={histBefore}>
+              <CartesianGrid {...gridStyle} />
+              <XAxis dataKey="range" tick={tickStyle} />
+              <YAxis tick={tickStyle} />
+              <Tooltip {...tooltipStyle} />
+              <Bar dataKey="count" fill="hsl(35 92% 60%)" name="Frekuensi" />
+            </BarChart>
+          </ResponsiveContainer>
+        </div>
+        <div className="stat-card">
+          <h3 className="text-sm font-semibold text-primary mb-2">📊 Distribusi — Setelah Cleaning</h3>
+          <ResponsiveContainer width="100%" height={200}>
+            <BarChart data={histAfter}>
+              <CartesianGrid {...gridStyle} />
+              <XAxis dataKey="range" tick={tickStyle} />
+              <YAxis tick={tickStyle} />
+              <Tooltip {...tooltipStyle} />
+              <Bar dataKey="count" fill="hsl(174 72% 50%)" name="Frekuensi" />
+            </BarChart>
+          </ResponsiveContainer>
+        </div>
+      </div>
 
-        <ResponsiveContainer width="100%" height={200}>
-          <ComposedChart data={timeSeriesData}>
+      {/* Tabel distribusi */}
+      <div className="stat-card">
+        <h3 className="text-sm font-semibold text-primary mb-3">📋 Data Distribusi (Range & Frekuensi)</h3>
+        <div className="overflow-x-auto">
+          <table className="w-full text-xs">
+            <thead className="border-b border-secondary">
+              <tr><th className="text-left py-1">Range Sales</th><th className="text-right py-1">Frekuensi (Before)</th><th className="text-right py-1">Frekuensi (After)</th></tr>
+            </thead>
+            <tbody>
+              {histBefore.map((item, idx) => {
+                const afterItem = histAfter[idx] || { count: 0 };
+                return (
+                  <tr key={idx} className="border-b border-secondary/50">
+                    <td className="py-1 font-mono">{item.range}</td>
+                    <td className="py-1 text-right font-mono">{item.count}</td>
+                    <td className="py-1 text-right font-mono">{afterItem.count}</td>
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
+        </div>
+      </div>
+
+      {/* 3. ACF */}
+      <div className="grid md:grid-cols-2 gap-4">
+        <div className="stat-card">
+          <h3 className="text-sm font-semibold text-primary mb-2">📈 ACF — Sebelum Cleaning</h3>
+          <ResponsiveContainer width="100%" height={200}>
+            <BarChart data={acfBefore}>
+              <CartesianGrid {...gridStyle} />
+              <XAxis dataKey="lag" tick={tickStyle} />
+              <YAxis domain={[-1, 1]} tick={tickStyle} />
+              <Tooltip {...tooltipStyle} />
+              <ReferenceLine y={ci} stroke="hsl(0 70% 60%)" strokeDasharray="5 5" />
+              <ReferenceLine y={-ci} stroke="hsl(0 70% 60%)" strokeDasharray="5 5" />
+              <Bar dataKey="value" fill="hsl(35 92% 60%)" />
+            </BarChart>
+          </ResponsiveContainer>
+        </div>
+        <div className="stat-card">
+          <h3 className="text-sm font-semibold text-primary mb-2">📈 ACF — Setelah Cleaning</h3>
+          <ResponsiveContainer width="100%" height={200}>
+            <BarChart data={acfAfter}>
+              <CartesianGrid {...gridStyle} />
+              <XAxis dataKey="lag" tick={tickStyle} />
+              <YAxis domain={[-1, 1]} tick={tickStyle} />
+              <Tooltip {...tooltipStyle} />
+              <ReferenceLine y={ci} stroke="hsl(0 70% 60%)" strokeDasharray="5 5" />
+              <ReferenceLine y={-ci} stroke="hsl(0 70% 60%)" strokeDasharray="5 5" />
+              <Bar dataKey="value" fill="hsl(174 72% 50%)" />
+            </BarChart>
+          </ResponsiveContainer>
+        </div>
+      </div>
+
+      {/* Tabel ACF */}
+      <div className="stat-card">
+        <h3 className="text-sm font-semibold text-primary mb-3">📋 Tabel Nilai ACF</h3>
+        <div className="overflow-x-auto">
+          <table className="w-full text-xs">
+            <thead className="border-b border-secondary">
+              <tr><th className="text-left py-1">Lag</th><th className="text-right py-1">ACF (Before)</th><th className="text-right py-1">ACF (After)</th></tr>
+            </thead>
+            <tbody>
+              {acfBefore.map((item, idx) => {
+                const afterItem = acfAfter[idx] || { value: 0 };
+                return (
+                  <tr key={idx} className="border-b border-secondary/50">
+                    <td className="py-1 font-mono">{item.lag}</td>
+                    <td className="py-1 text-right font-mono">{item.value.toFixed(4)}</td>
+                    <td className="py-1 text-right font-mono">{afterItem.value.toFixed(4)}</td>
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
+        </div>
+      </div>
+
+      {/* 4. PACF */}
+      <div className="grid md:grid-cols-2 gap-4">
+        <div className="stat-card">
+          <h3 className="text-sm font-semibold text-primary mb-2">📉 PACF — Sebelum Cleaning</h3>
+          <ResponsiveContainer width="100%" height={200}>
+            <BarChart data={pacfBefore}>
+              <CartesianGrid {...gridStyle} />
+              <XAxis dataKey="lag" tick={tickStyle} />
+              <YAxis domain={[-1, 1]} tick={tickStyle} />
+              <Tooltip {...tooltipStyle} />
+              <ReferenceLine y={ci} stroke="hsl(0 70% 60%)" strokeDasharray="5 5" />
+              <ReferenceLine y={-ci} stroke="hsl(0 70% 60%)" strokeDasharray="5 5" />
+              <Bar dataKey="value" fill="hsl(35 92% 60%)" />
+            </BarChart>
+          </ResponsiveContainer>
+        </div>
+        <div className="stat-card">
+          <h3 className="text-sm font-semibold text-primary mb-2">📉 PACF — Setelah Cleaning</h3>
+          <ResponsiveContainer width="100%" height={200}>
+            <BarChart data={pacfAfter}>
+              <CartesianGrid {...gridStyle} />
+              <XAxis dataKey="lag" tick={tickStyle} />
+              <YAxis domain={[-1, 1]} tick={tickStyle} />
+              <Tooltip {...tooltipStyle} />
+              <ReferenceLine y={ci} stroke="hsl(0 70% 60%)" strokeDasharray="5 5" />
+              <ReferenceLine y={-ci} stroke="hsl(0 70% 60%)" strokeDasharray="5 5" />
+              <Bar dataKey="value" fill="hsl(174 72% 50%)" />
+            </BarChart>
+          </ResponsiveContainer>
+        </div>
+      </div>
+
+      {/* Tabel PACF */}
+      <div className="stat-card">
+        <h3 className="text-sm font-semibold text-primary mb-3">📋 Tabel Nilai PACF</h3>
+        <div className="overflow-x-auto">
+          <table className="w-full text-xs">
+            <thead className="border-b border-secondary">
+              <tr><th className="text-left py-1">Lag</th><th className="text-right py-1">PACF (Before)</th><th className="text-right py-1">PACF (After)</th></tr>
+            </thead>
+            <tbody>
+              {pacfBefore.map((item, idx) => {
+                const afterItem = pacfAfter[idx] || { value: 0 };
+                return (
+                  <tr key={idx} className="border-b border-secondary/50">
+                    <td className="py-1 font-mono">{item.lag}</td>
+                    <td className="py-1 text-right font-mono">{item.value.toFixed(4)}</td>
+                    <td className="py-1 text-right font-mono">{afterItem.value.toFixed(4)}</td>
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
+        </div>
+      </div>
+
+      {/* 5. Boxplots */}
+      <div className="stat-card">
+        <h3 className="text-sm font-semibold text-primary mb-4">📦 Boxplot — Before vs After Cleaning</h3>
+        <div className="space-y-5">
+          <BoxplotViz stats={eda.boxplot_before} label="Sebelum Cleaning" color="hsl(35 92% 60%)" />
+          <BoxplotViz stats={eda.boxplot_after}  label="Setelah Cleaning (IQR Winsorized)" color="hsl(174 72% 50%)" />
+        </div>
+      </div>
+
+      {/* Tabel ringkasan boxplot */}
+      {boxBeforeSum && boxAfterSum && (
+        <div className="stat-card">
+          <h3 className="text-sm font-semibold text-primary mb-3">📋 Ringkasan Statistik Boxplot</h3>
+          <div className="overflow-x-auto">
+            <table className="w-full text-xs">
+              <thead className="border-b border-secondary">
+                <tr><th className="text-left py-1">Statistik</th><th className="text-right py-1">Sebelum Cleaning</th><th className="text-right py-1">Setelah Cleaning</th></tr>
+              </thead>
+              <tbody>
+                <tr className="border-b border-secondary/50"><td className="py-1">Min</td><td className="text-right font-mono">{boxBeforeSum.min}</td><td className="text-right font-mono">{boxAfterSum.min}</td></tr>
+                <tr className="border-b border-secondary/50"><td className="py-1">Q1</td><td className="text-right font-mono">{boxBeforeSum.q1}</td><td className="text-right font-mono">{boxAfterSum.q1}</td></tr>
+                <tr className="border-b border-secondary/50"><td className="py-1">Median</td><td className="text-right font-mono">{boxBeforeSum.median}</td><td className="text-right font-mono">{boxAfterSum.median}</td></tr>
+                <tr className="border-b border-secondary/50"><td className="py-1">Q3</td><td className="text-right font-mono">{boxBeforeSum.q3}</td><td className="text-right font-mono">{boxAfterSum.q3}</td></tr>
+                <tr className="border-b border-secondary/50"><td className="py-1">Max</td><td className="text-right font-mono">{boxBeforeSum.max}</td><td className="text-right font-mono">{boxAfterSum.max}</td></tr>
+                <tr className="border-b border-secondary/50"><td className="py-1">IQR</td><td className="text-right font-mono">{boxBeforeSum.iqr}</td><td className="text-right font-mono">{boxAfterSum.iqr}</td></tr>
+                <tr className="border-b border-secondary/50"><td className="py-1">Outlier Count</td><td className="text-right font-mono">{boxBeforeSum.outlier_count}</td><td className="text-right font-mono">{boxAfterSum.outlier_count}</td></tr>
+              </tbody>
+            </table>
+          </div>
+        </div>
+      )}
+
+      {/* 6. Rolling Mean & Std */}
+      {/* <div className="stat-card">
+        <h3 className="text-sm font-semibold text-primary mb-2">📊 Rolling Mean & Std (4 Minggu) — Before vs After</h3>
+        <ResponsiveContainer width="100%" height={250}>
+          <ComposedChart data={rollingData}>
             <CartesianGrid {...gridStyle} />
             <XAxis dataKey="week" tick={tickStyle} interval={4} />
             <YAxis tick={tickStyle} />
             <Tooltip {...tooltipStyle} />
-
-            <Line dataKey="sales" stroke="hsl(215 15% 55%)" dot={false} />
-            <Line dataKey="rollingMean" stroke="hsl(174 72% 50%)" dot={false} />
-            <Line
-              dataKey="rollingStd"
-              stroke="hsl(35 92% 60%)"
-              strokeDasharray="4 4"
-              dot={false}
-            />
+            <Legend wrapperStyle={{ fontSize: 11 }} />
+            <Line dataKey="rollingMeanBefore" stroke="hsl(35 92% 60%)" strokeWidth={1.5} dot={false} name="Rolling Mean (Before)" />
+            <Line dataKey="rollingStdBefore" stroke="hsl(35 92% 60%)" strokeDasharray="4 4" dot={false} name="Rolling Std (Before)" />
+            <Line dataKey="rollingMeanAfter" stroke="hsl(174 72% 50%)" strokeWidth={2} dot={false} name="Rolling Mean (After)" />
+            <Line dataKey="rollingStdAfter" stroke="hsl(174 72% 50%)" strokeDasharray="4 4" dot={false} name="Rolling Std (After)" />
           </ComposedChart>
         </ResponsiveContainer>
-      </div>
-
-      {/* ACF */}
-      <div className="stat-card">
-        <h3 className="text-sm font-semibold text-primary mb-3">ACF</h3>
-        <ResponsiveContainer width="100%" height={200}>
-          <BarChart data={acfData}>
-            <CartesianGrid {...gridStyle} />
-            <XAxis dataKey="lag" tick={tickStyle} />
-            <YAxis domain={[-0.5, 1]} tick={tickStyle} />
-            <Tooltip {...tooltipStyle} />
-            <ReferenceLine y={acfData[0]?.upper} stroke="red" strokeDasharray="5 5" />
-            <ReferenceLine y={acfData[0]?.lower} stroke="red" strokeDasharray="5 5" />
-            <Bar dataKey="acf" fill="hsl(174 72% 50%)" />
-          </BarChart>
-        </ResponsiveContainer>
-      </div>
-
-      {/* PACF */}
-      <div className="stat-card">
-        <h3 className="text-sm font-semibold text-primary mb-3">PACF</h3>
-        <ResponsiveContainer width="100%" height={200}>
-          <BarChart data={pacfData}>
-            <CartesianGrid {...gridStyle} />
-            <XAxis dataKey="lag" tick={tickStyle} />
-            <YAxis domain={[-0.5, 1]} tick={tickStyle} />
-            <Tooltip {...tooltipStyle} />
-            <ReferenceLine y={pacfData[0]?.upper} stroke="red" strokeDasharray="5 5" />
-            <ReferenceLine y={pacfData[0]?.lower} stroke="red" strokeDasharray="5 5" />
-            <Bar dataKey="pacf" fill="hsl(262 60% 58%)" />
-          </BarChart>
-        </ResponsiveContainer>
-
-        <p className="text-xs text-muted-foreground mt-2 italic">
-          PACF dihitung secara aproksimasi untuk visualisasi.
-        </p>
-      </div>
-
-      {/* Seasonality Heatmap */}
-      {eda.seasonality && eda.seasonality.length > 0 && (
-        <SeasonalityHeatmap data={eda.seasonality} />
-      )}
+      </div> */}
     </div>
   );
 };

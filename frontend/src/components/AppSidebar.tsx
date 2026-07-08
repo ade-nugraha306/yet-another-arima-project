@@ -1,3 +1,4 @@
+// src/components/AppSidebar.tsx
 import { useState } from "react";
 import {
   BarChart3, ChevronLeft, ChevronRight, Play,
@@ -23,20 +24,19 @@ const stages = [
 interface Props {
   activeStage: number;
   onStageChange: (stage: number) => void;
-  productIndex: number;
-  onProductChange: (idx: number) => void;
+  familyIndex: number;
+  onFamilyChange: (idx: number) => void;
   horizon: number;
   onHorizonChange: (h: number) => void;
-  // ── props baru dari backend ──────────────────────────────────
-  products: string[];
-  productsLoading: boolean;
+  families: string[];
+  familiesLoading: boolean;
 }
 
 const AppSidebar = ({
   activeStage, onStageChange,
-  productIndex, onProductChange,
+  familyIndex, onFamilyChange,
   horizon, onHorizonChange,
-  products, productsLoading,
+  families, familiesLoading,
 }: Props) => {
   const [collapsed, setCollapsed] = useState(false);
 
@@ -87,23 +87,23 @@ const AppSidebar = ({
       {!collapsed && (
         <div className="p-4 border-t border-sidebar-border space-y-4">
 
-          {/* Product selector */}
+          {/* Family selector */}
           <div>
-            <Label className="text-xs text-muted-foreground">Produk</Label>
-            {productsLoading ? (
+            <Label className="text-xs text-muted-foreground">Product Family</Label>
+            {familiesLoading ? (
               <div className="mt-1 h-9 rounded-md bg-sidebar-accent border border-sidebar-border animate-pulse" />
             ) : (
               <Select
-                value={String(productIndex)}
-                onValueChange={(v) => onProductChange(Number(v))}
+                value={String(familyIndex)}
+                onValueChange={(v) => onFamilyChange(Number(v))}
               >
                 <SelectTrigger className="mt-1 bg-sidebar-accent border-sidebar-border text-sm">
-                  <SelectValue placeholder="Pilih produk…" />
+                  <SelectValue placeholder="Pilih family…" />
                 </SelectTrigger>
                 <SelectContent className="max-h-60">
-                  {products.map((p, i) => (
+                  {families.map((f, i) => (
                     <SelectItem key={i} value={String(i)}>
-                      {p}
+                      {f}
                     </SelectItem>
                   ))}
                 </SelectContent>

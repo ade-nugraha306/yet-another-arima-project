@@ -1,8 +1,9 @@
+fastapi
+uvicorn[standard]
 openpyxl
 pandas
 numpy==1.26.4
-matplotlib
-seaborn
 statsmodels
 scipy
 pmdarima==2.0.4
+scikit-learn

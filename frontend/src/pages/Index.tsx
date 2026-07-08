@@ -7,51 +7,49 @@ import DataPreparation from "@/components/stages/DataPreparation";
 import EDA from "@/components/stages/EDA";
 import Modeling from "@/components/stages/Modeling";
 import Evaluation from "@/components/stages/Evaluation";
-import { getProducts } from "@/services/api";
+import { getFamilies } from "@/services/api";
 
 const Index = () => {
   const [activeStage, setActiveStage] = useState(0);
-  const [productIndex, setProductIndex] = useState(0);
+  const [familyIndex, setFamilyIndex] = useState(0);
   const [horizon, setHorizon] = useState(5);
 
-  // ── Daftar produk dari backend ───────────────────────────────
-  const [products, setProducts] = useState<string[]>([]);
-  const [productsLoading, setProductsLoading] = useState(true);
+  // ── Daftar family dari backend ───────────────────────────────
+  const [families, setFamilies] = useState<string[]>([]);
+  const [familiesLoading, setFamiliesLoading] = useState(true);
 
   useEffect(() => {
-    getProducts()
+    getFamilies()
       .then((list) => {
         if (list.length > 0) {
-          setProducts(list);
-          setProductIndex(0);
+          setFamilies(list);
+          setFamilyIndex(0);
         }
       })
       .catch(() => {
-        // Backend belum jalan → fallback mock agar UI tidak crash
-        console.warn("[Index] Backend tidak tersedia, menggunakan data mock.");
-        setProducts(["Produk A", "Produk B", "Produk C"]);
+        console.warn("[Index] Backend tidak tersedia, menggunakan mock families.");
+        setFamilies(["5DAYS", "CAF", "FOX", "HYDROPLUS", "TUBRUK", "UHT"]);
       })
-      .finally(() => setProductsLoading(false));
+      .finally(() => setFamiliesLoading(false));
   }, []);
 
-  // Selalu string valid, tidak pernah undefined
-  const selectedProduct = products[productIndex] ?? products[0] ?? "";
+  const selectedFamily = families[familyIndex] ?? families[0] ?? "";
 
   const renderStage = () => {
     switch (activeStage) {
       case 0: return <BusinessUnderstanding />;
-      case 1: return <DataAcquisition product={selectedProduct} />
-      case 2: return <DataPreparation product={selectedProduct} />;
-      case 3: return <EDA product={selectedProduct} />;
+      case 1: return <DataAcquisition family={selectedFamily} />;
+      case 2: return <DataPreparation family={selectedFamily} />;
+      case 3: return <EDA family={selectedFamily} />;
       case 4:
         return (
           <Modeling
-            selectedProduct={selectedProduct}
+            selectedFamily={selectedFamily}
             horizon={horizon}
           />
         );
       case 5:
-        return <Evaluation product={selectedProduct} horizon={horizon} />;
+        return <Evaluation family={selectedFamily} />;
       default:
         return <BusinessUnderstanding />;
     }
@@ -62,18 +60,18 @@ const Index = () => {
       <AppSidebar
         activeStage={activeStage}
         onStageChange={setActiveStage}
-        productIndex={productIndex}
-        onProductChange={setProductIndex}
+        familyIndex={familyIndex}
+        onFamilyChange={setFamilyIndex}
         horizon={horizon}
         onHorizonChange={setHorizon}
-        products={products}
-        productsLoading={productsLoading}
+        families={families}
+        familiesLoading={familiesLoading}
       />
       <main className="flex-1 overflow-y-auto">
         <div className="max-w-5xl mx-auto p-6 md:p-8">
-          {productsLoading ? (
+          {familiesLoading ? (
             <div className="flex items-center justify-center h-40 text-muted-foreground text-sm">
-              <span className="animate-pulse">Memuat data produk dari backend…</span>
+              <span className="animate-pulse">Memuat daftar family dari backend…</span>
             </div>
           ) : (
             renderStage()

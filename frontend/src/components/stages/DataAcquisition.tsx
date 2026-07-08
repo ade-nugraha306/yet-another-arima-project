@@ -1,6 +1,7 @@
+// src/components/stages/DataAcquisition.tsx
 import { useEffect, useState } from "react";
-import { Database, FileSpreadsheet, Clock, Layers, Loader2 } from "lucide-react";
-import { getProducts, getEDA } from "@/services/api";
+import { Database, FileSpreadsheet, Clock, Layers, Package, Loader2 } from "lucide-react";
+import { getDataAcquisition, type DataAcquisitionResponse } from "@/services/api";
 import {
   Table,
   TableBody,
@@ -11,87 +12,47 @@ import {
 } from "@/components/ui/table";
 
 interface Props {
-  product: string;
+  family: string;
 }
 
-interface Row {
-  week: string;
-  sales: number;
-}
-
-const DataAcquisition = ({ product }: Props) => {
-  const [productCount, setProductCount] = useState<number | null>(null);
-  const [preview, setPreview] = useState<Row[]>([]);
-  const [totalRows, setTotalRows] = useState<number>(0);
+const DataAcquisition = ({ family }: Props) => {
+  const [data, setData] = useState<DataAcquisitionResponse | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
+    if (!family) return;
     let cancelled = false;
 
     async function load() {
       setLoading(true);
       setError(null);
-
       try {
-        const productsRes = await getProducts();
-        const edaRes = await getEDA(product);
-
-        console.log("PRODUCTS:", productsRes);
-        console.log("EDA:", edaRes);
-
-        if (cancelled) return;
-
-        // ✅ Handle products safely
-        setProductCount(productsRes.length);
-
-        // ✅ Handle EDA safely (multi-format support)
-        let rows: Row[] = [];
-
-        if (edaRes?.dates && edaRes?.sales) {
-          rows = edaRes.dates.map((d: string, i: number) => ({
-            week: d,
-            sales: edaRes.sales[i],
-          }));
-        }
-
-        else if (Array.isArray(edaRes)) {
-          // fallback kalau backend return array object
-          rows = edaRes.map((r: any) => ({
-            week: r.week ?? r.date ?? "-",
-            sales: r.sales ?? r.value ?? 0,
-          }));
-        }
-
-        else {
-          console.warn("EDA shape tidak dikenali:", edaRes);
-        }
-
-        setTotalRows(rows.length);
-        setPreview(rows.slice(0, 5));
-
+        const res = await getDataAcquisition(family);
+        if (!cancelled) setData(res);
       } catch (e: unknown) {
-        if (!cancelled) {
-          setError(e instanceof Error ? e.message : "Gagal memuat data");
-        }
+        if (!cancelled) setError(e instanceof Error ? e.message : "Gagal memuat data");
       } finally {
         if (!cancelled) setLoading(false);
       }
     }
 
     load();
-
-    return () => {
-      cancelled = true;
-    };
-  }, [product]);
+    return () => { cancelled = true; };
+  }, [family]);
 
   const infoCards = [
-    { icon: FileSpreadsheet, label: "Sumber Data", value: "Excel (.xlsx)" },
-    { icon: Layers, label: "Jumlah Produk", value: productCount !== null ? `${productCount} Produk` : "—" },
-    { icon: Clock, label: "Periode", value: "W1 – W40" },
-    { icon: Database, label: "Frekuensi", value: "Weekly" },
+    { icon: FileSpreadsheet, label: "Sumber Data",    value: "Excel (.csv)" },
+    { icon: Layers,          label: "Family",         value: family || "—" },
+    { icon: Package,         label: "Jumlah SKU",     value: data ? `${data.sku_count} SKU` : "—" },
+    { icon: Clock,           label: "Periode",        value: data ? `${data.total_weeks} Minggu` : "W1 – W40" },
+    { icon: Database,        label: "Frekuensi",      value: "Weekly" },
   ];
+
+  // Preview: first 5 rows
+  const preview = data
+    ? data.weeks.slice(0, 5).map((w, i) => ({ week: w, sales: data.sales_raw[i] }))
+    : [];
 
   return (
     <div className="space-y-6 animate-fade-in">
@@ -100,10 +61,12 @@ const DataAcquisition = ({ product }: Props) => {
         <h2 className="section-header mt-3">Data Acquisition</h2>
         <p className="text-muted-foreground mt-1">
           Mengumpulkan dan memuat data penjualan mingguan dari sumber data Excel.
+          Data diagregasi per <span className="text-primary font-semibold">Product Family</span>.
         </p>
       </div>
 
-      <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
+      {/* Info Cards */}
+      <div className="grid grid-cols-2 md:grid-cols-5 gap-3">
         {infoCards.map((c) => (
           <div key={c.label} className="stat-card text-center">
             <c.icon className="w-5 h-5 text-primary mx-auto mb-2" />
@@ -113,9 +76,29 @@ const DataAcquisition = ({ product }: Props) => {
         ))}
       </div>
 
+      {/* SKU list */}
+      {data && data.skus.length > 0 && (
+        <div className="stat-card">
+          <h3 className="text-sm font-semibold text-primary mb-2">
+            📦 SKU dalam Family <span className="text-foreground">{family}</span>
+          </h3>
+          <div className="flex flex-wrap gap-2">
+            {data.skus.map((sku) => (
+              <span
+                key={sku}
+                className="text-xs px-2 py-1 rounded bg-primary/10 text-primary font-mono"
+              >
+                {sku}
+              </span>
+            ))}
+          </div>
+        </div>
+      )}
+
+      {/* Preview Table */}
       <div className="stat-card">
         <h3 className="text-sm font-semibold text-primary mb-3">
-          Preview Data (5 Baris Pertama)
+          Preview Data (5 Baris Pertama — Sales Total Family)
         </h3>
 
         {loading && (
@@ -129,9 +112,7 @@ const DataAcquisition = ({ product }: Props) => {
         )}
 
         {!loading && !error && preview.length === 0 && (
-          <p className="text-sm text-muted-foreground py-2">
-            Tidak ada data tersedia
-          </p>
+          <p className="text-sm text-muted-foreground py-2">Tidak ada data tersedia</p>
         )}
 
         {!loading && !error && preview.length > 0 && (
@@ -141,17 +122,17 @@ const DataAcquisition = ({ product }: Props) => {
                 <TableHeader>
                   <TableRow>
                     <TableHead>No</TableHead>
-                    <TableHead>Minggu</TableHead>
-                    <TableHead>Penjualan</TableHead>
+                    <TableHead>Tanggal (Minggu)</TableHead>
+                    <TableHead>Total Sales Family</TableHead>
                   </TableRow>
                 </TableHeader>
                 <TableBody>
                   {preview.map((row, i) => (
                     <TableRow key={`${row.week}-${i}`}>
                       <TableCell>{i + 1}</TableCell>
-                      <TableCell>{row.week}</TableCell>
+                      <TableCell className="font-mono">{row.week}</TableCell>
                       <TableCell className="text-primary font-semibold">
-                        {row.sales}
+                        {row.sales !== null ? row.sales.toLocaleString() : "—"}
                       </TableCell>
                     </TableRow>
                   ))}
@@ -160,7 +141,8 @@ const DataAcquisition = ({ product }: Props) => {
             </div>
 
             <p className="text-xs text-muted-foreground mt-2">
-              Menampilkan {preview.length} dari {totalRows} total record
+              Menampilkan 5 dari {data?.total_weeks} total minggu.
+              {" "}(Week 14 tidak tersedia dalam dataset — bukan missing data)
             </p>
           </>
         )}

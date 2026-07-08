@@ -60,13 +60,11 @@ export interface EDAResponse {
   stationary: boolean;
   adf_statistic: number;
   adf_p_value: number;
-  // Fields below are NOT returned by /eda (only by /data-preparation):
-  missing_before?: number;
-  missing_after?: number;
-  outliers_before?: number;
-  outliers_after?: number;
-  cleaning_method?: string;
-  method?: string;
+  missing_before: number;
+  missing_after: number;
+  outliers_before: number;
+  outliers_after: number;
+  cleaning_method: string;
   weeks: string[];
   sales_before: (number | null)[];
   sales_after: number[];
@@ -74,24 +72,6 @@ export interface EDAResponse {
   rolling_std: number[];
   boxplot_before: BoxplotStats;
   boxplot_after: BoxplotStats;
-  distribution_before?: { range: string; count: number }[];
-  distribution_after?: { range: string; count: number }[];
-  acf_before?: { lag: number; value: number }[];
-  acf_after?: { lag: number; value: number }[];
-  pacf_before?: { lag: number; value: number }[];
-  pacf_after?: { lag: number; value: number }[];
-  boxplot_before_summary?: BoxplotSummary;
-  boxplot_after_summary?: BoxplotSummary;
-}
-
-export interface BoxplotSummary {
-  min: number;
-  q1: number;
-  median: number;
-  q3: number;
-  max: number;
-  iqr: number;
-  outlier_count: number;
 }
 
 export interface BoxplotStats {
@@ -114,8 +94,6 @@ export interface ModellingResponse {
   last_sales: number;
   historical_weeks: string[];
   historical_sales: number[];
-  historical_avg: number;
-  forecast_avg: number;
 }
 
 export interface EvaluationResponse {
@@ -124,13 +102,13 @@ export interface EvaluationResponse {
   aic: number | null;
   mae: number;
   rmse: number;
-  smape: number;        // sMAPE — not MAPE; already in percent (e.g. 49.95 = 49.95%)
+  smape: number;        // sMAPE — not MAPE
   actual_train: number[];
   actual_test: number[];
   fitted: number[];
   dates_train: string[];
   dates_test: string[];
-  // trend: field does NOT exist in backend response (get_evaluation() in arima_service.py)
+  trend: "FAST" | "MEDIUM" | "SLOW";
 }
 
 // ── Endpoints ─────────────────────────────────────────────────
@@ -175,34 +153,4 @@ export async function getEvaluation(family: string): Promise<EvaluationResponse>
   return apiFetch<EvaluationResponse>(
     `/evaluation?family=${encodeURIComponent(family)}`
   );
-}
-
-export interface CleaningSample {
-  Product: string;
-  Week: number;
-  Sales: number | null;
-}
-
-export interface SalesPreviewItem {
-  week: string;
-  sales_before: number;
-  sales_after: number;
-}
-
-export interface CleaningSamplesResponse {
-  family: string;
-  missing_before_samples: CleaningSample[];
-  missing_after_samples: CleaningSample[];
-  total_missing_before: number;
-  total_missing_after: number;
-  outliers_before_samples: CleaningSample[];
-  outliers_after_samples: CleaningSample[];
-  total_outliers_before: number;
-  total_outliers_after: number;
-  sales_preview: SalesPreviewItem[];
-}
-
-export async function getCleaningSamples(family: string): Promise<CleaningSamplesResponse> {
-  const res = await apiFetch<CleaningSamplesResponse>(`/data-cleaning-samples?family=${encodeURIComponent(family)}`);
-  return res;
 }
