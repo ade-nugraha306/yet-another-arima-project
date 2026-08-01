@@ -63,17 +63,14 @@ This project was created as a Final Project (Tugas Akhir) and uses historical sa
 yet-another-arima-project/
 │
 ├── backend/
-│   ├── app/
-│   ├── data/
-│   ├── models/
-│   ├── routes/
 │   ├── services/
-│   ├── utils/
-│   └── main.py
+│   ├── README.md
+│   └── requirements.txt
 │
 ├── frontend/
-│   ├── src/
+│   ├── images/
 │   ├── public/
+│   ├── src/
 │   └── package.json
 │
 ├── README.md
