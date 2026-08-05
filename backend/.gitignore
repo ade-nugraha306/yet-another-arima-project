@@ -219,6 +219,3 @@ __marimo__/
 csv_output
 *.tmp
 .ipynb_checkpoints/
-
-*.csv
-*.xlsx
