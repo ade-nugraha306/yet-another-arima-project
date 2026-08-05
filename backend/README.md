@@ -6,7 +6,7 @@ Proses ini bertujuan untuk **membersihkan dan menyiapkan data penjualan mingguan
 ---
 
 ## 2. Dataset
-- **Sumber**: File Excel `AVG 12W & 5W (W1–W40).xlsx`
+- **Sumber**: File Excel `AVG 12W & 5W (W1–W40).csv`
 - **Struktur awal**: Data penjualan disajikan secara _wide format_, dengan kolom minggu (W1, W2, dst.)
 - **Kolom penting**:
   - `PRINC 1` — Prinsipal produk  
